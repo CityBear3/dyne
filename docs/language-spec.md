@@ -312,7 +312,21 @@ let result: Vec<2> = m * v  // OK: Mat<2,3> * Vec<3> -> Vec<2>
 
 ### 5.1 Unrecoverable Errors
 
-Bugs and user-defined validation errors cause a panic, immediately terminating the program.
+Unrecoverable errors are triggered by the built-in `panic` function, immediately terminating the program. The runtime prints the error message and a stack trace showing the call chain leading to the panic.
+
+```
+if mass < 0.0 then
+    panic("mass must be non-negative")
+end
+```
+
+Output:
+
+```
+panic: mass must be non-negative
+  at simulation.calc:12
+  at main:45
+```
 
 ### 5.2 NaN/Infinity
 
