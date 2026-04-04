@@ -1,84 +1,84 @@
-# 言語仕様書: Calculator
+# Language Specification: Calculator
 
-## 1. 概要
+## 1. Overview
 
-Calculator は科学計算に特化したコンパイル型プログラミング言語である。本仕様書は言語の構文、型システム、意味論を定義する。
+Calculator is a compiled programming language specialized for scientific computing. This specification defines the syntax, type system, and semantics of the language.
 
-## 2. 字句構造
+## 2. Lexical Structure
 
-### 2.1 コメント
+### 2.1 Comments
 
-`//` から行末までがコメントとして扱われる。複数行コメントはサポートしない。
-
-```
-// これはコメント
-let x: Scalar = 1.0 // インラインコメント
-```
-
-### 2.2 リテラル
-
-#### 数値リテラル
-
-整数リテラルと浮動小数点リテラルを区別する。浮動小数点リテラルは小数点を含む。
+Everything from `//` to the end of the line is treated as a comment. Multi-line comments are not supported.
 
 ```
-42        // 整数リテラル
-3.14      // 浮動小数点リテラル
-1.0e-10   // 指数表記
+// This is a comment
+let x: Scalar = 1.0 // Inline comment
 ```
 
-#### 文字列リテラル
+### 2.2 Literals
 
-ダブルクォートで囲む。
+#### Numeric Literals
+
+Integer literals and floating-point literals are distinguished. Floating-point literals contain a decimal point.
+
+```
+42        // Integer literal
+3.14      // Floating-point literal
+1.0e-10   // Exponential notation
+```
+
+#### String Literals
+
+Enclosed in double quotes.
 
 ```
 "Hello, World"
 ```
 
-#### ベクトルリテラル
+#### Vector Literals
 
-角括弧で要素をカンマ区切りで記述する。
+Elements are separated by commas within square brackets.
 
 ```
 [1.0, 2.0, 3.0]
 ```
 
-#### 行列リテラル
+#### Matrix Literals
 
-ベクトルリテラルをネストする。
+Nested vector literals.
 
 ```
 [[1.0, 0.0], [0.0, 1.0]]
 ```
 
-### 2.3 演算子
+### 2.3 Operators
 
-#### 算術演算子
+#### Arithmetic Operators
 
-`+`（加算）、`-`（減算）、`*`（乗算）、`/`（除算）、`^`（べき乗）
+`+` (addition), `-` (subtraction), `*` (multiplication), `/` (division), `^` (exponentiation)
 
-#### 比較演算子
+#### Comparison Operators
 
-`==`、`!=`、`<`、`>`、`<=`、`>=`
+`==`, `!=`, `<`, `>`, `<=`, `>=`
 
-#### 論理演算子
+#### Logical Operators
 
-`and`、`or`、`not`
+`and`, `or`, `not`
 
-## 3. 構文
+## 3. Syntax
 
-### 3.1 変数定義
+### 3.1 Variable Definition
 
-`let`キーワードで変数を定義する。型注釈は必須。再代入は許可する。
+Variables are defined using the `let` keyword. Type annotations are required. Reassignment is allowed.
 
 ```
 let x: Scalar = 1.0
-x = 2.0  // 再代入
+x = 2.0  // Reassignment
 ```
 
-### 3.2 関数定義
+### 3.2 Function Definition
 
-`function`キーワードで定義し、`end`で閉じる。引数と戻り値に型注釈を記述する。戻り値は`return`で明示する。
+Defined using the `function` keyword and closed with `end`. Type annotations are required for parameters and return values. Return values must be explicit using `return`.
 
 ```
 function add(a: Scalar, b: Scalar): Scalar
@@ -86,24 +86,24 @@ function add(a: Scalar, b: Scalar): Scalar
 end
 ```
 
-### 3.3 無名関数
+### 3.3 Anonymous Functions
 
-1行の場合は`->`の後に式を記述する。複数行の場合は`->`の後に改行し、`end`で閉じる。
+For single-expression functions, the expression follows `->`. For multi-line functions, a newline follows `->` and the body is closed with `end`.
 
 ```
-// 1行
+// Single-line
 let square: Fn(Scalar) -> Scalar = (x) -> x ^ 2
 
-// 複数行
+// Multi-line
 let compute: Fn(Vec<3>) -> Scalar = (q) ->
     let a = dot(q, q)
     return a + 1.0
 end
 ```
 
-### 3.4 制御構文
+### 3.4 Control Flow
 
-#### 条件分岐
+#### Conditional
 
 ```
 if x > 0 then
@@ -115,15 +115,28 @@ else
 end
 ```
 
-#### forループ
+#### For Loop
+
+Two forms are provided: range loop and iteration loop. The range loop is exclusive of the upper bound.
 
 ```
-for i = 1, 10 do
+// Range loop (iterates 0, 1, 2. 3 is excluded)
+for i = 0, 3 do
+    ...
+end
+
+// Iteration loop
+for x in arr do
+    ...
+end
+
+// Dictionary iteration
+for key, value in params do
     ...
 end
 ```
 
-#### whileループ
+#### While Loop
 
 ```
 while x > 0 do
@@ -131,9 +144,9 @@ while x > 0 do
 end
 ```
 
-### 3.5 構造体
+### 3.5 Struct
 
-データのみを持ち、メソッドは持たない。
+Structs hold data only and do not have methods.
 
 ```
 struct State
@@ -145,157 +158,229 @@ end
 let s = State { q: [1.0, 0.0, 0.0], p: [0.0, 1.0, 0.0], t: 0.0 }
 ```
 
-### 3.6 モジュール
+### 3.6 Module
 
-`import`でファイル単位のモジュールを読み込む。
+Modules are loaded per file using `import`.
 
 ```
 import math
 import simulation.integrator
 ```
 
-## 4. 型システム
+### 3.7 Array Operations
 
-### 4.1 基本型
-
-| 型 | 説明 |
-|---|---|
-| `Scalar` | 64bit浮動小数点数（f64） |
-| `Int` | 64bit符号付き整数（i64） |
-| `String` | 文字列 |
-| `Bool` | 真偽値 |
-
-### 4.2 コレクション型
-
-| 型 | 説明 |
-|---|---|
-| `Vec<N>` | N次元ベクトル |
-| `Mat<M, N>` | M行N列の行列 |
-| `Array<T>` | 可変長配列 |
-| `Dict<K, V>` | 辞書型 |
-
-### 4.3 関数型
+Element access uses 0-based indexing. Insertion, removal, and length are provided as functions.
 
 ```
-Fn(引数型, ...) -> 戻り値型
+let arr: Array<Scalar> = [1.0, 2.0, 3.0]
+let x: Scalar = arr[0]       // Element access
+push(arr, 4.0)               // Append to end
+let y: Scalar = pop(arr)     // Remove from end
+let len: Int = length(arr)   // Length
 ```
 
-### 4.4 単位付き型
+### 3.8 Dictionary Operations
 
-型の最後のパラメータとして単位を付与できる。単位はオプショナルであり、省略した場合は無次元となる。
+Values are accessed, added, updated, and removed by key.
+
+```
+let params: Dict<String, Scalar> = {"mass": 1.0, "k": 0.5}
+let m: Scalar = params["mass"]        // Access
+params["damping"] = 0.1               // Add / Update
+let has: Bool = contains(params, "k") // Check key existence
+remove(params, "damping")             // Remove
+```
+
+## 4. Type System
+
+### 4.1 Primitive Types
+
+| Type | Description |
+|---|---|
+| `Scalar` | 64-bit floating-point number (f64) |
+| `Int` | 64-bit signed integer (i64) |
+| `String` | String |
+| `Bool` | Boolean |
+
+### 4.2 Collection Types
+
+| Type | Description |
+|---|---|
+| `Vec<N>` | N-dimensional vector |
+| `Mat<M, N>` | M-by-N matrix |
+| `Array<T>` | Variable-length array |
+| `Dict<K, V>` | Dictionary |
+
+### 4.3 Function Type
+
+```
+Fn(ParamType, ...) -> ReturnType
+```
+
+### 4.4 Unit-Annotated Types
+
+Units can be attached as the last type parameter. Units are optional; omitting them means the value is dimensionless.
 
 ```
 let mass: Scalar<kg> = 1.5
 let velocity: Vec<3, m/s> = [1.0, 2.0, 3.0]
-let m: Mat<2, 2> = [[1.0, 0.0], [0.0, 1.0]]  // 行列は無次元
+let m: Mat<2, 2> = [[1.0, 0.0], [0.0, 1.0]]  // Matrices are dimensionless
 ```
 
-単位の整合性はコンパイル時に検査される。不整合はコンパイルエラーとなる。
+Unit consistency is checked at compile time. Inconsistencies result in a compile error.
 
-### 4.5 単位系
+### 4.5 Unit Systems
 
-初期リリースではSI、CGS、ガウス単位系を組み込みで提供する。将来的にユーザー定義の単位系に拡張可能とする。
+The initial release provides SI, CGS, and Gaussian unit systems as built-ins. User-defined unit systems will be supported in the future.
 
-### 4.6 エラー型（後日詳細化）
+### 4.6 Sum Types and Pattern Matching
 
-直和型（Result/Option）とパターンマッチによる回復可能なエラー処理を導入予定。詳細な構文設計は後日定める。
+Sum types (tagged unions) are defined using the `enum` keyword. `Result` and `Option` are provided as built-in sum types.
 
-### 4.7 型変換
+```
+enum Result<T, E>
+    Ok(T)
+    Err(E)
+end
 
-IntからScalar（無次元）への暗黙変換を許可する。単位付きScalarへの直接代入は型エラーとなる。ScalarからIntへの変換は明示的な変換関数を必要とする。
+enum Option<T>
+    Some(T)
+    None
+end
+```
+
+Pattern matching is performed using `match`. Each case uses `then` to begin its body.
+
+```
+let file: Result<File, Error> = open("data.csv", "r")
+match file
+    Ok(f) then
+        // use f
+    Err(e) then
+        printf("Error: %s\n", e)
+end
+```
+
+### 4.7 Type Conversion
+
+Implicit conversion from Int to dimensionless Scalar is allowed. Direct assignment to a unit-annotated Scalar is a type error. Conversion from Scalar to Int requires an explicit conversion function.
 
 ```
 let i: Int = 3
-let x: Scalar = i              // OK: 無次元Scalarへの暗黙変換
-let mass: Scalar<kg> = i       // コンパイルエラー: 単位付きへの暗黙変換は不可
+let x: Scalar = i              // OK: implicit conversion to dimensionless Scalar
+let mass: Scalar<kg> = i       // Compile error: implicit conversion to unit-annotated type
 let dt: Scalar<s> = 0.01
-let t: Scalar<s> = i * dt      // OK: i→Scalar(無次元)に変換、乗算で単位が伝搬
-let n: Int = to_int(x)         // 明示的変換が必要
+let t: Scalar<s> = i * dt      // OK: i -> Scalar (dimensionless), unit propagated by multiplication
+let n: Int = to_int(x)         // Explicit conversion required
 ```
 
-### 4.8 ベクトル・行列の次元検査
+### 4.8 Vector/Matrix Dimension Checking
 
-ベクトルと行列の演算における次元の整合性はコンパイル時に検査される。
+Dimensional consistency of vector and matrix operations is checked at compile time.
 
 ```
 let a: Vec<3> = [1.0, 2.0, 3.0]
 let b: Vec<2> = [1.0, 2.0]
-let c = a + b  // コンパイルエラー: Vec<3>とVec<2>の加算
+let c = a + b  // Compile error: cannot add Vec<3> and Vec<2>
 
 let m: Mat<2, 3> = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
 let v: Vec<3> = [1.0, 2.0, 3.0]
-let result: Vec<2> = m * v  // OK: Mat<2,3> * Vec<3> → Vec<2>
+let result: Vec<2> = m * v  // OK: Mat<2,3> * Vec<3> -> Vec<2>
 ```
 
-## 5. エラーハンドリング
+## 5. Error Handling
 
-### 5.1 回復不能なエラー
+### 5.1 Unrecoverable Errors
 
-プログラムのバグやユーザー定義の検証エラーはpanicとしてプログラムを即座に停止する。
+Bugs and user-defined validation errors cause a panic, immediately terminating the program.
 
-### 5.2 NaN/inf
+### 5.2 NaN/Infinity
 
-デフォルトではIEEE 754に準拠しNaN/infを伝搬する。コンパイラオプションによりNaN/inf発生時にpanicさせることができる。
+By default, NaN and infinity propagate in accordance with IEEE 754. A compiler option allows switching to panic on NaN/infinity generation.
 
-### 5.3 回復可能なエラー
+### 5.3 Recoverable Errors
 
-ファイルI/Oなど外界との境界で発生するエラーは、直和型（Result/Option）で扱う。詳細は後日定める。
+Errors at external boundaries (e.g., file I/O) are handled using sum types (Result/Option). Details are deferred.
 
-## 6. コンパイラ機能
+## 6. Compiler Features
 
-### 6.1 コンパイル時精度警告
+### 6.1 Compile-Time Precision Warnings
 
-ループ内の浮動小数点加算パターンを静的解析し、丸め誤差の蓄積リスクがある場合にコンパイル時警告を出す。
+The compiler statically analyzes floating-point addition patterns within loops and warns when there is a risk of rounding error accumulation.
 
-### 6.2 コンパイル時次元検査
+### 6.2 Compile-Time Dimension Checking
 
-単位付き型の次元整合性をコンパイル時に検査する。
+The compiler checks dimensional consistency of unit-annotated types at compile time.
 
-## 7. 標準ライブラリ（概要）
+## 7. Standard Library (Overview)
 
-### 7.1 自動微分
+### 7.1 Automatic Differentiation
 
-任意のスカラー関数に対する偏微分を提供する。ハミルトンの正準方程式の自動導出に利用できる。
+Provides partial differentiation for arbitrary scalar functions. Can be used to automatically derive Hamilton's canonical equations of motion.
 
-### 7.2 シンプレクティック積分器
+### 7.2 Symplectic Integrators
 
-シンプレクティックオイラー法、Stormer-Verlet法、4次シンプレクティック積分法を提供する。
+Provides symplectic Euler method, Stormer-Verlet method, and 4th-order symplectic integration.
 
-### 7.3 補正和
+### 7.3 Compensated Summation
 
-`kahan_sum`関数により、浮動小数点加算の丸め誤差蓄積を抑制する。
+The `kahan_sum` function suppresses rounding error accumulation in floating-point addition.
 
-### 7.4 3D可視化
+### 7.4 3D Visualization
 
-位相空間軌道、ポテンシャルエネルギー面、時間発展アニメーションの描画を提供する。
+Provides rendering of phase space trajectories, potential energy surfaces, and time evolution animations.
 
-### 7.5 物理定数
+### 7.5 Physical Constants
 
-光速、プランク定数、ボルツマン定数、重力定数などの基本物理定数を単位付きの値として提供する。
+Provides fundamental physical constants (speed of light, Planck constant, Boltzmann constant, gravitational constant, etc.) as unit-annotated values.
 
-### 7.6 無次元化
+### 7.6 Nondimensionalization
 
-特性スケールを指定することで方程式を無次元形に変換する機能を提供する。
+Provides functionality to transform equations into dimensionless form by specifying characteristic scales.
 
-## 8. 意味論
+### 7.7 Input/Output
 
-### 8.1 評価戦略
+Provides formatted output via the `printf` function.
 
-正格評価を採用する。関数の引数は関数本体の実行前にすべて評価される。
+```
+printf("Energy: %f at t=%f\n", energy, t)
+```
 
-### 8.2 スコープ
+### 7.8 File I/O
 
-ブロックスコープを採用する。`function`、`if`、`for`、`while`の各ブロック内で定義された変数は、そのブロック内でのみ有効である。
+Provides basic file operations: opening, reading, writing, and closing files. File operations return `Result` types for error handling.
 
-### 8.3 クロージャ
+```
+let file: Result<File, Error> = open("output.csv", "w")
+match file
+    Ok(f) then
+        write(f, "t,energy\n")
+        write(f, printf("%f,%f\n", t, energy))
+        close(f)
+    Err(e) then
+        printf("Failed to open file: %s\n", e)
+end
+```
 
-無名関数は定義時の外側のスコープの変数を参照できる。
+## 8. Semantics
+
+### 8.1 Evaluation Strategy
+
+Strict evaluation is adopted. All function arguments are evaluated before the function body is executed.
+
+### 8.2 Scope
+
+Block scoping is adopted. Variables defined within `function`, `if`, `for`, and `while` blocks are only accessible within that block.
+
+### 8.3 Closures
+
+Anonymous functions can reference variables from the enclosing scope at the point of definition.
 
 ```
 let k: Scalar = 0.5
-let force: Fn(Vec<3>) -> Vec<3> = (q) -> -k * q  // kを参照
+let force: Fn(Vec<3>) -> Vec<3> = (q) -> -k * q  // References k
 ```
 
-### 8.4 引数の渡し方
+### 8.4 Argument Passing
 
-すべての引数は値渡し（コピー）として振る舞う。コンパイラは内部的にコピーの最適化（コピーオンライト等）を行ってよい。
+All arguments behave as pass-by-value (copy). The compiler may internally optimize copies (e.g., copy-on-write).
