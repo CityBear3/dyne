@@ -1,61 +1,39 @@
-# プロダクト仕様書: Calculator
+# Calculator
 
-## 概要
+## What is Calculator?
 
-Calculator は、物理系の研究者・学生を対象とした科学計算特化型プログラミング言語である。物理シミュレーションにおける方程式の記述、ベクトル・行列操作、結果の可視化を、既存の汎用言語よりも簡潔かつ安全に行えることを目指す。
+Calculator is a compiled programming language designed for computational physics. It lets physicists and students write simulations the way they think about physics — in terms of Hamiltonians, vectors, and units — rather than fighting with generic arrays, manual differentiation, and boilerplate integration code.
 
-## 背景
+## Motivation
 
-現在、物理シミュレーションの実装には Python + JAX/NumPy が広く使われている。しかし、汎用言語の上に科学計算を載せるアプローチには以下の構造的な問題がある。
+Physics simulations are commonly written in Python with JAX/NumPy, MATLAB, or Fortran. While these tools are powerful, they force physicists to translate their mathematical thinking into programming constructs that don't match the structure of the physics.
 
-ハミルトニアンの運動方程式を導出する際、各自由度に対する偏微分を個別に記述し、手動で結合する必要がある。2次元系でも4回の勾配計算と配列結合が必要であり、次元が増えるとコードは線形に膨張する。ベクトルや行列は汎用的な多次元配列として扱われるため、物理的な意味（位置、運動量、力など）が型レベルで区別されない。シンプレクティック積分のような構造保存型の数値計算は、毎回ボイラープレートとして書き直される。また、シミュレーション結果の3D可視化には別途ライブラリの習得と大量の描画コードが必要になる。
+Consider deriving equations of motion from a Hamiltonian. In Python, this requires computing partial derivatives one by one for each degree of freedom, manually concatenating the results into arrays, and losing all type-level distinction between position, momentum, and force. A 2D Henon-Heiles system needs four separate gradient calls and explicit array assembly. Scale to higher dimensions, and the code grows linearly with no structural guarantee that you haven't mixed up q and p.
 
-Calculator は、これらの問題を言語レベルで解決する。
+Symplectic integrators — essential for preserving the geometric structure of Hamiltonian systems — must be reimplemented as boilerplate for every new project.
 
-## 対象ユーザー
+Calculator eliminates this friction. Write a Hamiltonian, and the equations of motion are derived automatically. Vectors carry their dimension in the type. Physical units are checked at compile time. Symplectic integration is a standard library call, not a copy-paste ritual.
 
-物理系の研究者・学生。特に、ハミルトン力学やラグランジュ力学に基づくシミュレーションを実装する場面を主要なユースケースとする。
+## Key Features
 
-## 機能
+- **First-class vectors and matrices** with compile-time dimension checking (`Vec<3>`, `Mat<2,3>`)
+- **Automatic differentiation** — define a scalar function and compute its gradient; Hamilton's canonical equations are derived without manual partial derivatives
+- **Compile-time unit checking** — physical quantities carry units (`Scalar<kg>`, `Vec<3, m/s>`), and dimensional mismatches are caught before runtime
+- **Built-in symplectic integrators** — symplectic Euler, Stormer-Verlet, and 4th-order methods available out of the box
+- **Nondimensionalization** — transform equations into dimensionless form by specifying characteristic scales
+- **Physical constants** — fundamental constants provided as unit-annotated values in the standard library
+- **Beginner-friendly syntax** — Lua-inspired block structure with `end` keywords, no braces, no semicolons
 
-### ベクトル・行列のファーストクラスサポート
+## Technical Details
 
-ベクトルと行列を言語組み込みの型として提供する。生成、演算（加減乗除、内積、外積、テンソル積など）、分解を簡潔な構文で記述できる。
+- Compiled language
+- Compiler implemented in Rust
+- SI, CGS, and Gaussian unit systems provided out of the box
 
-### 自動微分とハミルトン方程式の自動導出
+## Documentation
 
-ハミルトニアン関数を定義すれば、ハミルトンの正準方程式（dq/dt = ∂H/∂p, dp/dt = -∂H/∂q）が自動的に導出される。ユーザーが偏微分を個別に記述する必要はない。
+- [Language Specification](language-spec.md)
 
-### シンプレクティック積分器の組み込みサポート
+## Contributing
 
-シンプレクティックオイラー法、Stormer-Verlet法、4次シンプレクティック積分法などを言語の標準機能として提供する。積分器の選択と適用を簡潔に記述できる。
-
-### 3Dシミュレーション可視化
-
-シミュレーション結果の3D可視化を言語の標準機能として提供する。位相空間軌道、ポテンシャルエネルギー面、時間発展アニメーションなどを少ないコードで描画できる。
-
-### 単位系・次元解析
-
-物理量に単位を付与し、次元の整合性をコンパイル時に検査する。単位の不整合（例：速度に質量を加算する）はコンパイルエラーとして検出される。
-
-### 無次元化
-
-方程式の無次元化を言語レベルでサポートする。特性スケールを指定することで、方程式を無次元形に変換できる。
-
-### 物理定数ライブラリ
-
-光速、プランク定数、ボルツマン定数、重力定数などの基本物理定数を、単位付きの値として標準ライブラリに組み込む。
-
-## 技術的制約
-
-- コンパイラ型言語として実装する
-- コンパイラの実装言語は Rust とする
-
-## スコープ外
-
-プロダクト仕様の段階では以下を対象外とする。
-
-- 言語の詳細な構文定義
-- 型システムの設計
-- コンパイラのバックエンド選択
-- 標準ライブラリの詳細な API 設計
+Calculator is open source. Contributions are welcome — whether language design feedback, compiler development, standard library implementation, or documentation.

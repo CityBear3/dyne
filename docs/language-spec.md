@@ -326,19 +326,15 @@ Provides symplectic Euler method, Stormer-Verlet method, and 4th-order symplecti
 
 The `kahan_sum` function suppresses rounding error accumulation in floating-point addition.
 
-### 7.4 3D Visualization
-
-Provides rendering of phase space trajectories, potential energy surfaces, and time evolution animations.
-
-### 7.5 Physical Constants
+### 7.4 Physical Constants
 
 Provides fundamental physical constants (speed of light, Planck constant, Boltzmann constant, gravitational constant, etc.) as unit-annotated values.
 
-### 7.6 Nondimensionalization
+### 7.5 Nondimensionalization
 
 Provides functionality to transform equations into dimensionless form by specifying characteristic scales.
 
-### 7.7 Input/Output
+### 7.6 Input/Output
 
 Provides formatted output via the `printf` function.
 
@@ -346,7 +342,7 @@ Provides formatted output via the `printf` function.
 printf("Energy: %f at t=%f\n", energy, t)
 ```
 
-### 7.8 File I/O
+### 7.7 File I/O
 
 Provides basic file operations: opening, reading, writing, and closing files. File operations return `Result` types for error handling.
 
