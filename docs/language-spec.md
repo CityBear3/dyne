@@ -249,6 +249,16 @@ enum Option<T>
 end
 ```
 
+User-defined sum types can also be declared:
+
+```
+enum Energy
+    Kinetic(Scalar)
+    Potential(Scalar)
+    Total(Scalar, Scalar)
+end
+```
+
 Pattern matching is performed using `match`. Each case uses `then` to begin its body.
 
 ```
@@ -258,6 +268,16 @@ match file
         // use f
     Err(e) then
         printf("Error: %s\n", e)
+end
+```
+
+Pattern matching must be exhaustive. If any variant is not covered, a compile error is raised.
+
+```
+// Compile error: missing case `None`
+match opt
+    Some(x) then
+        ...
 end
 ```
 
@@ -300,7 +320,7 @@ By default, NaN and infinity propagate in accordance with IEEE 754. A compiler o
 
 ### 5.3 Recoverable Errors
 
-Errors at external boundaries (e.g., file I/O) are handled using sum types (Result/Option). Details are deferred.
+Errors at external boundaries (e.g., file I/O) are handled using sum types (`Result`/`Option`). See section 4.6 for syntax details.
 
 ## 6. Compiler Features
 
