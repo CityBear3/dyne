@@ -9,6 +9,15 @@ pub enum ErrorKind {
     Parse,
 }
 
+impl ErrorKind {
+    fn label(self) -> &'static str {
+        match self {
+            ErrorKind::Lex => "lex error",
+            ErrorKind::Parse => "parse error",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct CompileError {
     pub kind: ErrorKind,
@@ -36,10 +45,7 @@ impl CompileError {
     /// Render the error with line/column and source excerpt.
     pub fn render(&self, source: &SourceFile) -> String {
         let (line, col) = source.line_col(self.span.start);
-        let kind = match self.kind {
-            ErrorKind::Lex => "lex error",
-            ErrorKind::Parse => "parse error",
-        };
+        let kind = self.kind.label();
         let excerpt = source.line_text(line).unwrap_or("");
         let caret_col = col.saturating_sub(1);
         let caret = " ".repeat(caret_col) + "^";
@@ -57,10 +63,7 @@ impl CompileError {
 
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self.kind {
-            ErrorKind::Lex => "lex error",
-            ErrorKind::Parse => "parse error",
-        };
+        let kind = self.kind.label();
         write!(
             f,
             "{kind} at offset {}: {}",
@@ -92,5 +95,20 @@ mod tests {
             format!("{err}"),
             "parse error at offset 5: expected ')'"
         );
+    }
+
+    #[test]
+    fn render_for_parse_error() {
+        let src = SourceFile::new("ab cd");
+        let err = CompileError::parse(Span::new(3, 4), "expected '('");
+        let rendered = err.render(&src);
+        assert!(rendered.contains("parse error"));
+        assert!(rendered.contains("expected '('"));
+    }
+
+    #[test]
+    fn display_for_lex_error() {
+        let err = CompileError::lex(Span::new(0, 1), "bad byte");
+        assert_eq!(format!("{err}"), "lex error at offset 0: bad byte");
     }
 }
