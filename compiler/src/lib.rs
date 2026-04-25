@@ -1,5 +1,6 @@
 //! Calculator compiler library.
 
+pub mod ast;
 pub mod error;
 pub mod source;
 
