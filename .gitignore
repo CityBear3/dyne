@@ -3,3 +3,6 @@
 
 # Claude Code: personal overrides (not committed)
 .claude/settings.local.json
+
+# Claude Code: worktrees
+.claude/worktrees/
