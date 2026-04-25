@@ -40,6 +40,57 @@ impl<'a> Scanner<'a> {
                 b'/' if self.peek_byte(1) == Some(b'/') => {
                     self.skip_line_comment();
                 }
+                b'+' => self.push_single(TokenKind::Plus),
+                b'-' => {
+                    if self.peek_byte(1) == Some(b'>') {
+                        self.push_two(TokenKind::Arrow);
+                    } else {
+                        self.push_single(TokenKind::Minus);
+                    }
+                }
+                b'*' => self.push_single(TokenKind::Star),
+                b'/' => self.push_single(TokenKind::Slash),
+                b'^' => self.push_single(TokenKind::Caret),
+                b'=' => {
+                    if self.peek_byte(1) == Some(b'=') {
+                        self.push_two(TokenKind::EqEq);
+                    } else {
+                        self.push_single(TokenKind::Eq);
+                    }
+                }
+                b'!' => {
+                    if self.peek_byte(1) == Some(b'=') {
+                        self.push_two(TokenKind::Neq);
+                    } else {
+                        return Err(CompileError::lex(
+                            Span::new(self.pos, self.pos + 1),
+                            "unexpected '!' (did you mean '!='?)",
+                        ));
+                    }
+                }
+                b'<' => {
+                    if self.peek_byte(1) == Some(b'=') {
+                        self.push_two(TokenKind::Le);
+                    } else {
+                        self.push_single(TokenKind::Lt);
+                    }
+                }
+                b'>' => {
+                    if self.peek_byte(1) == Some(b'=') {
+                        self.push_two(TokenKind::Ge);
+                    } else {
+                        self.push_single(TokenKind::Gt);
+                    }
+                }
+                b'(' => self.push_single(TokenKind::LParen),
+                b')' => self.push_single(TokenKind::RParen),
+                b'[' => self.push_single(TokenKind::LBracket),
+                b']' => self.push_single(TokenKind::RBracket),
+                b'{' => self.push_single(TokenKind::LBrace),
+                b'}' => self.push_single(TokenKind::RBrace),
+                b':' => self.push_single(TokenKind::Colon),
+                b',' => self.push_single(TokenKind::Comma),
+                b'.' => self.push_single(TokenKind::Dot),
                 _ => {
                     return Err(CompileError::lex(
                         Span::new(self.pos, self.pos + 1),
@@ -82,6 +133,24 @@ impl<'a> Scanner<'a> {
             self.pos += 1;
         }
     }
+
+    fn push_single(&mut self, kind: TokenKind) {
+        let start = self.pos;
+        self.pos += 1;
+        self.tokens.push(Token {
+            kind,
+            span: Span::new(start, start + 1),
+        });
+    }
+
+    fn push_two(&mut self, kind: TokenKind) {
+        let start = self.pos;
+        self.pos += 2;
+        self.tokens.push(Token {
+            kind,
+            span: Span::new(start, start + 2),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +189,51 @@ mod tests {
         assert_eq!(
             kinds("// a comment\n"),
             vec![TokenKind::Newline, TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn single_char_operators() {
+        assert_eq!(
+            kinds("+ - * / ^"),
+            vec![
+                TokenKind::Plus, TokenKind::Minus, TokenKind::Star,
+                TokenKind::Slash, TokenKind::Caret, TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn comparison_operators() {
+        assert_eq!(
+            kinds("= == != < > <= >="),
+            vec![
+                TokenKind::Eq, TokenKind::EqEq, TokenKind::Neq,
+                TokenKind::Lt, TokenKind::Gt, TokenKind::Le, TokenKind::Ge,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn delimiters() {
+        assert_eq!(
+            kinds("( ) [ ] { } : , ."),
+            vec![
+                TokenKind::LParen, TokenKind::RParen,
+                TokenKind::LBracket, TokenKind::RBracket,
+                TokenKind::LBrace, TokenKind::RBrace,
+                TokenKind::Colon, TokenKind::Comma, TokenKind::Dot,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn arrow_operator() {
+        assert_eq!(
+            kinds("-> -"),
+            vec![TokenKind::Arrow, TokenKind::Minus, TokenKind::Eof]
         );
     }
 }
