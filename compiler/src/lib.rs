@@ -1,5 +1,7 @@
 //! Calculator compiler library.
 
+pub mod source;
+
 pub fn compile(_source: &str) -> Result<(), ()> {
     Ok(())
 }
