@@ -68,10 +68,8 @@ impl<'a> Scanner<'a> {
                 _ => break,
             }
         }
-        if let Some(last) = self.tokens.last() {
-            if matches!(last.kind, TokenKind::Newline) {
-                return;
-            }
+        if let Some(Token { kind: TokenKind::Newline, .. }) = self.tokens.last() {
+            return;
         }
         self.tokens.push(Token {
             kind: TokenKind::Newline,
