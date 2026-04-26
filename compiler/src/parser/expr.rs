@@ -917,6 +917,24 @@ mod tests {
         assert_eq!(prog.items.len(), 1);
     }
 
+    #[test]
+    fn lbrace_after_non_ident_does_not_form_struct_lit() {
+        let toks = tokenize("f() { x: 1 }").unwrap();
+        let mut p = Parser::new(&toks);
+        let e = super::parse_expr(&mut p).unwrap();
+        assert!(matches!(e.kind, ExprKind::Call(_, _)));
+        // The `{` must remain unconsumed — postfix loop should have broken.
+        assert!(matches!(p.peek_kind(), TokenKind::LBrace));
+    }
+
+    #[test]
+    fn struct_lit_non_ident_field_rejected() {
+        let toks = tokenize("Point { 1: x }").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("expected field name"));
+    }
+
     fn parse_pat(source: &str) -> crate::ast::Pattern {
         let toks = tokenize(source).unwrap();
         let mut p = Parser::new(&toks);
