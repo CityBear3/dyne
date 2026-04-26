@@ -1,25 +1,32 @@
-fn main() {
-    println!("Hello, world!");
-}
+use std::env;
+use std::fs;
+use std::process::ExitCode;
 
-struct Lexer {
-    user_input: String,
-}
+use calculator::{compile, source::SourceFile};
 
-impl Lexer {
-    fn new(input: String) -> Self {
-        Lexer { user_input: input }
+fn main() -> ExitCode {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("usage: {} <source-file>", args[0]);
+        return ExitCode::from(2);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn init_lexer() {
-        let input = String::from("let x = 5;");
-        let lexer = Lexer::new(input);
-        assert_eq!(lexer.user_input, "let x = 5;");
+    let path = &args[1];
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("failed to read {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let source = SourceFile::new(text);
+    match compile(source.text()) {
+        Ok(program) => {
+            println!("parsed {} item(s)", program.items.len());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{}", err.render(&source));
+            ExitCode::from(1)
+        }
     }
 }

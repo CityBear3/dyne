@@ -1,0 +1,91 @@
+//! Statement AST nodes.
+
+use crate::ast::expr::Expr;
+use crate::ast::ty::Type;
+use crate::source::Span;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StmtKind {
+    Let(LetStmt),
+    Assign(String, Expr),
+    Expr(Expr),
+    Return(Option<Expr>),
+    For(ForStmt),
+    While(WhileStmt),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LetStmt {
+    pub name: String,
+    pub ty: Type,
+    pub init: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForStmt {
+    Range {
+        var: String,
+        start: Expr,
+        end: Expr,
+        body: Block,
+    },
+    Iter {
+        var: String,
+        iter: Expr,
+        body: Block,
+    },
+    IterKV {
+        key: String,
+        value: String,
+        iter: Expr,
+        body: Block,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhileStmt {
+    pub cond: Expr,
+    pub body: Block,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::expr::ExprKind;
+    use crate::ast::ty::{Type, TypeKind};
+
+    #[test]
+    fn construct_let_stmt() {
+        let stmt = Stmt {
+            kind: StmtKind::Let(LetStmt {
+                name: "x".into(),
+                ty: Type {
+                    kind: TypeKind::Named("Scalar".into()),
+                    span: Span::new(0, 6),
+                },
+                init: Expr {
+                    kind: ExprKind::FloatLit(1.0),
+                    span: Span::new(10, 13),
+                },
+            }),
+            span: Span::new(0, 13),
+        };
+        if let StmtKind::Let(l) = &stmt.kind {
+            assert_eq!(l.name, "x");
+        } else {
+            panic!("expected Let");
+        }
+    }
+}

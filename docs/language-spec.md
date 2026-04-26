@@ -1,8 +1,8 @@
-# Language Specification: Calculator
+# Language Specification: Dyne
 
 ## 1. Overview
 
-Calculator is a compiled programming language specialized for scientific computing. This specification defines the syntax, type system, and semantics of the language.
+Dyne is a compiled programming language specialized for scientific computing. The name comes from the cgs unit of force — fitting for a language whose type system carries physical units. This specification defines the syntax, type system, and semantics of the language. Source files use the `.dy` extension.
 
 ## 2. Lexical Structure
 
@@ -37,18 +37,30 @@ Enclosed in double quotes.
 
 #### Vector Literals
 
-Elements are separated by commas within square brackets.
+Elements are separated by commas within square brackets. Newlines inside the brackets are ignored, and a trailing comma is allowed.
 
 ```
 [1.0, 2.0, 3.0]
+
+[
+  1.0,
+  2.0,
+  3.0,
+]
 ```
 
 #### Matrix Literals
 
-Nested vector literals.
+Nested vector literals. As with vectors, newlines inside the brackets are ignored and a trailing comma is allowed.
 
 ```
 [[1.0, 0.0], [0.0, 1.0]]
+
+[
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
 ```
 
 ### 2.3 Operators
@@ -324,7 +336,7 @@ Output:
 
 ```
 panic: mass must be non-negative
-  at simulation.calc:12
+  at simulation.dy:12
   at main:45
 ```
 
