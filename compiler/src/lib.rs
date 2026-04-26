@@ -2,9 +2,10 @@
 
 pub mod ast;
 pub mod error;
-pub mod lexer;
-pub mod parser;
 pub mod source;
+
+pub(crate) mod lexer;
+pub(crate) mod parser;
 
 use crate::ast::Program;
 use crate::error::CompileError;

@@ -3,13 +3,13 @@
 use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Token {
+pub(crate) struct Token {
     pub kind: TokenKind,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind {
+pub(crate) enum TokenKind {
     // Literals
     Int(i64),
     Float(f64),
@@ -39,7 +39,7 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
-    pub fn keyword(ident: &str) -> Option<TokenKind> {
+    pub(crate) fn keyword(ident: &str) -> Option<TokenKind> {
         Some(match ident {
             "let" => TokenKind::Let,
             "function" => TokenKind::Function,

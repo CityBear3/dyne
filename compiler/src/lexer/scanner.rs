@@ -4,7 +4,7 @@ use crate::error::CompileError;
 use crate::lexer::token::{Token, TokenKind};
 use crate::source::Span;
 
-pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
+pub(crate) fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
     let mut scanner = Scanner::new(source);
     scanner.run()?;
     Ok(scanner.tokens)
