@@ -5,7 +5,7 @@ use crate::error::CompileError;
 use crate::parser::Parser;
 use crate::source::Span;
 
-pub fn parse_program(parser: &mut Parser) -> Result<Program, CompileError> {
+pub(crate) fn parse_program(parser: &mut Parser) -> Result<Program, CompileError> {
     parser.consume_newlines();
     // TODO: parse items. Placeholder returns empty program.
     Ok(Program {
