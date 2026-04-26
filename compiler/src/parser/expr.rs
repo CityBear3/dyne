@@ -326,6 +326,60 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
     })
 }
 
+use crate::ast::{Pattern, PatternKind};
+
+// Transient: parse_pattern is only consumed by tests until Task 8 wires it
+// into parse_match_expr. Removed in Task 8.
+#[allow(dead_code)]
+pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
+    let start = p.current_span();
+    let tok = p.peek().clone();
+    match &tok.kind {
+        TokenKind::Ident(name) if name == "_" => {
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::Wildcard,
+                span: tok.span,
+            })
+        }
+        TokenKind::Ident(name) => {
+            let n = name.clone();
+            p.advance();
+            if p.eat(&TokenKind::LParen) {
+                p.consume_newlines();
+                let mut payload = Vec::new();
+                if !p.at(&TokenKind::RParen) {
+                    payload.push(parse_pattern(p)?);
+                    p.consume_newlines();
+                    while p.eat(&TokenKind::Comma) {
+                        p.consume_newlines();
+                        if p.at(&TokenKind::RParen) {
+                            break;
+                        }
+                        payload.push(parse_pattern(p)?);
+                        p.consume_newlines();
+                    }
+                }
+                let end = p.current_span();
+                p.expect(&TokenKind::RParen, "')'")?;
+                Ok(Pattern {
+                    kind: PatternKind::Variant(n, payload),
+                    span: Span::merge(start, end),
+                })
+            } else {
+                Ok(Pattern {
+                    kind: PatternKind::Ident(n),
+                    span: tok.span,
+                })
+            }
+        }
+        _ => Err(CompileError::parse(
+            tok.span,
+            format!("expected pattern, found {:?}", tok.kind),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,6 +773,88 @@ mod tests {
             assert_eq!(ie.elseifs.len(), 1);
         } else {
             panic!("expected If");
+        }
+    }
+
+    fn parse_pat(source: &str) -> crate::ast::Pattern {
+        let toks = tokenize(source).unwrap();
+        let mut p = Parser::new(&toks);
+        super::parse_pattern(&mut p).unwrap()
+    }
+
+    #[test]
+    fn pattern_wildcard() {
+        let p = parse_pat("_");
+        assert!(matches!(p.kind, crate::ast::PatternKind::Wildcard));
+    }
+
+    #[test]
+    fn pattern_ident_binding() {
+        let p = parse_pat("x");
+        match p.kind {
+            crate::ast::PatternKind::Ident(name) => assert_eq!(name, "x"),
+            other => panic!("expected Ident, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_no_payload_variant_parses_as_ident() {
+        // No-payload variant lexes as Ident; semantic phase resolves whether it
+        // is a variant or a free binding.
+        let p = parse_pat("None");
+        match p.kind {
+            crate::ast::PatternKind::Ident(name) => assert_eq!(name, "None"),
+            other => panic!("expected Ident, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_variant_one_payload() {
+        let p = parse_pat("Some(x)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Some");
+                assert_eq!(payload.len(), 1);
+                assert!(matches!(payload[0].kind, crate::ast::PatternKind::Ident(_)));
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_variant_multi_payload() {
+        let p = parse_pat("Total(a, b)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Total");
+                assert_eq!(payload.len(), 2);
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_nested_variant() {
+        let p = parse_pat("Ok(Some(x))");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Ok");
+                assert_eq!(payload.len(), 1);
+                assert!(matches!(
+                    payload[0].kind,
+                    crate::ast::PatternKind::Variant(_, _)
+                ));
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_variant_multi_line_payload() {
+        let p = parse_pat("Total(\n  a,\n  b,\n)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(_, payload) => assert_eq!(payload.len(), 2),
+            other => panic!("expected Variant, got {other:?}"),
         }
     }
 }
