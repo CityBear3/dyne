@@ -61,12 +61,19 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
 fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     let start = p.peek().span;
     p.advance(); // consume '['
+    p.consume_newlines();
     // Matrix if first element is '['
     if p.at(&TokenKind::LBracket) {
         let mut rows = Vec::new();
         rows.push(parse_row(p)?);
+        p.consume_newlines();
         while p.eat(&TokenKind::Comma) {
+            p.consume_newlines();
+            if p.at(&TokenKind::RBracket) {
+                break; // trailing comma
+            }
             rows.push(parse_row(p)?);
+            p.consume_newlines();
         }
         let end = p.peek().span;
         p.expect(&TokenKind::RBracket, "']'")?;
@@ -79,8 +86,14 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     let mut elems = Vec::new();
     if !p.at(&TokenKind::RBracket) {
         elems.push(parse_expr(p)?);
+        p.consume_newlines();
         while p.eat(&TokenKind::Comma) {
+            p.consume_newlines();
+            if p.at(&TokenKind::RBracket) {
+                break; // trailing comma
+            }
             elems.push(parse_expr(p)?);
+            p.consume_newlines();
         }
     }
     let end = p.peek().span;
@@ -195,11 +208,18 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
 
 fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
     p.expect(&TokenKind::LBracket, "'['")?;
+    p.consume_newlines();
     let mut row = Vec::new();
     if !p.at(&TokenKind::RBracket) {
         row.push(parse_expr(p)?);
+        p.consume_newlines();
         while p.eat(&TokenKind::Comma) {
+            p.consume_newlines();
+            if p.at(&TokenKind::RBracket) {
+                break; // trailing comma
+            }
             row.push(parse_expr(p)?);
+            p.consume_newlines();
         }
     }
     p.expect(&TokenKind::RBracket, "']'")?;
@@ -334,6 +354,64 @@ mod tests {
                 assert_eq!(m[0].len(), 2);
             }
             _ => panic!("expected MatLit"),
+        }
+    }
+
+    #[test]
+    fn multi_line_vector_literal() {
+        // Newlines inside [ ... ] are ignored.
+        let src = "[\n  1.0,\n  2.0,\n  3.0\n]";
+        match parse(src).kind {
+            ExprKind::VecLit(v) => assert_eq!(v.len(), 3),
+            other => panic!("expected VecLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_line_matrix_literal() {
+        let src = "[\n  [1.0, 0.0, 0.0],\n  [0.0, 1.0, 0.0],\n  [0.0, 0.0, 1.0]\n]";
+        match parse(src).kind {
+            ExprKind::MatLit(m) => {
+                assert_eq!(m.len(), 3);
+                assert_eq!(m[0].len(), 3);
+            }
+            other => panic!("expected MatLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_comma_vector_literal() {
+        match parse("[1.0, 2.0, 3.0,]").kind {
+            ExprKind::VecLit(v) => assert_eq!(v.len(), 3),
+            other => panic!("expected VecLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_comma_matrix_rows() {
+        match parse("[[1, 2], [3, 4],]").kind {
+            ExprKind::MatLit(m) => assert_eq!(m.len(), 2),
+            other => panic!("expected MatLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_comma_inside_matrix_row() {
+        match parse("[[1, 2,], [3, 4,]]").kind {
+            ExprKind::MatLit(m) => {
+                assert_eq!(m.len(), 2);
+                assert_eq!(m[0].len(), 2);
+            }
+            other => panic!("expected MatLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_line_with_trailing_comma_combined() {
+        let src = "[\n  1.0,\n  2.0,\n  3.0,\n]";
+        match parse(src).kind {
+            ExprKind::VecLit(v) => assert_eq!(v.len(), 3),
+            other => panic!("expected VecLit, got {other:?}"),
         }
     }
 
