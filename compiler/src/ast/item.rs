@@ -102,6 +102,9 @@ pub enum PatternKind {
     Wildcard,
     Ident(String),
     Variant(String, Vec<Pattern>),
+    IntLit(i64),
+    BoolLit(bool),
+    StrLit(String),
 }
 
 #[cfg(test)]
@@ -115,6 +118,13 @@ mod tests {
             span: Span::new(0, 0),
         };
         assert_eq!(p.items.len(), 0);
+    }
+
+    #[test]
+    fn pattern_literal_variants_exist() {
+        let _ = PatternKind::IntLit(42);
+        let _ = PatternKind::BoolLit(true);
+        let _ = PatternKind::StrLit("hello".into());
     }
 
     #[test]
