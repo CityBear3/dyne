@@ -491,11 +491,14 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
                 "unexpected end of input inside match expression",
             ));
         }
+        // Capture span of `case` BEFORE consuming, so the arm span includes
+        // the keyword (not just `pattern then body`).
+        let case_span = p.current_span();
         p.expect(&TokenKind::Case, "'case'")?;
         let pattern = parse_pattern(p)?;
         p.expect(&TokenKind::Then, "'then'")?;
         let body = parse_match_arm_body(p)?;
-        let arm_span = Span::merge(pattern.span, body.span);
+        let arm_span = Span::merge(case_span, body.span);
         arms.push(MatchArm {
             pattern,
             body,
@@ -1080,6 +1083,45 @@ mod tests {
         let mut parser = Parser::new(&toks);
         let prog = crate::parser::stmt::parse_program(&mut parser).unwrap();
         assert_eq!(prog.items.len(), 1);
+    }
+
+    #[test]
+    fn match_missing_case_keyword_rejected() {
+        let toks = tokenize("match x\n  Some(v) then\n    v\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("'case'"));
+    }
+
+    #[test]
+    fn match_missing_then_keyword_rejected() {
+        let toks = tokenize("match x\n  case Some(v)\n    v\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("'then'"));
+    }
+
+    #[test]
+    fn match_eof_inside_expression_rejected() {
+        // Reaches the outer Eof guard: scrutinee + newlines, then Eof before the first `case`.
+        let toks = tokenize("match x\n").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(
+            err.message
+                .contains("unexpected end of input inside match expression")
+        );
+    }
+
+    #[test]
+    fn match_eof_inside_arm_body_rejected() {
+        let toks = tokenize("match x\n  case _ then\n").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(
+            err.message
+                .contains("unexpected end of input inside match arm body")
+        );
     }
 
     fn parse_pat(source: &str) -> crate::ast::Pattern {
