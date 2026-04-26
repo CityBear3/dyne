@@ -1,8 +1,10 @@
-# Calculator
+# Dyne
 
-## What is Calculator?
+## What is Dyne?
 
-Calculator is a compiled programming language designed for computational physics. It lets physicists and students write simulations the way they think about physics — in terms of Hamiltonians, vectors, and units — rather than fighting with generic arrays, manual differentiation, and boilerplate integration code.
+Dyne is a compiled programming language designed for computational physics. It lets physicists and students write simulations the way they think about physics — in terms of Hamiltonians, vectors, and units — rather than fighting with generic arrays, manual differentiation, and boilerplate integration code.
+
+The name comes from the cgs unit of force — a fitting choice for a language whose type system carries physical units throughout.
 
 ## Motivation
 
@@ -12,7 +14,7 @@ Consider deriving equations of motion from a Hamiltonian. In Python, this requir
 
 Symplectic integrators — essential for preserving the geometric structure of Hamiltonian systems — must be reimplemented as boilerplate for every new project.
 
-Calculator eliminates this friction. Write a Hamiltonian, and the equations of motion are derived automatically. Vectors carry their dimension in the type. Physical units are checked at compile time. Symplectic integration is a standard library call, not a copy-paste ritual.
+Dyne eliminates this friction. Write a Hamiltonian, and the equations of motion are derived automatically. Vectors carry their dimension in the type. Physical units are checked at compile time. Symplectic integration is a standard library call, not a copy-paste ritual.
 
 ## Key Features
 
@@ -36,4 +38,4 @@ Calculator eliminates this friction. Write a Hamiltonian, and the equations of m
 
 ## Contributing
 
-Calculator is open source. Contributions are welcome — whether language design feedback, compiler development, standard library implementation, or documentation.
+Dyne is open source. Contributions are welcome — whether language design feedback, compiler development, standard library implementation, or documentation.

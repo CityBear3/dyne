@@ -1,8 +1,8 @@
-# Language Specification: Calculator
+# Language Specification: Dyne
 
 ## 1. Overview
 
-Calculator is a compiled programming language specialized for scientific computing. This specification defines the syntax, type system, and semantics of the language.
+Dyne is a compiled programming language specialized for scientific computing. The name comes from the cgs unit of force — fitting for a language whose type system carries physical units. This specification defines the syntax, type system, and semantics of the language. Source files use the `.dy` extension.
 
 ## 2. Lexical Structure
 
@@ -336,7 +336,7 @@ Output:
 
 ```
 panic: mass must be non-negative
-  at simulation.calc:12
+  at simulation.dy:12
   at main:45
 ```
 

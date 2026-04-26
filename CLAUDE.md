@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Calculator is a compiled programming language for computational physics (Hamiltonian mechanics, symplectic integration, unit-checked physical quantities). The repository contains:
+Dyne is a compiled programming language for computational physics (Hamiltonian mechanics, symplectic integration, unit-checked physical quantities). The repository contains:
 
 - `docs/language-spec.md` — authoritative language specification (lexical structure, syntax, type system, semantics, stdlib overview). This is the contract the compiler must implement; when implementation and spec disagree, one of them is wrong.
 - `docs/product-spec.md` — motivation and feature overview for end users.
