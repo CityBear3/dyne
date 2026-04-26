@@ -91,6 +91,7 @@ impl<'a> Scanner<'a> {
                 b':' => self.push_single(TokenKind::Colon),
                 b',' => self.push_single(TokenKind::Comma),
                 b'.' => self.push_single(TokenKind::Dot),
+                b'0'..=b'9' => self.scan_number()?,
                 _ => {
                     return Err(CompileError::lex(
                         Span::new(self.pos, self.pos + 1),
@@ -150,6 +151,72 @@ impl<'a> Scanner<'a> {
             kind,
             span: Span::new(start, start + 2),
         });
+    }
+
+    fn scan_number(&mut self) -> Result<(), CompileError> {
+        let start = self.pos;
+        while self.pos < self.source.len() && self.source[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        let mut is_float = false;
+
+        // Fractional part: require digit on both sides of '.'.
+        if self.peek_byte(0) == Some(b'.') {
+            if let Some(next) = self.peek_byte(1) {
+                if next.is_ascii_digit() {
+                    is_float = true;
+                    self.pos += 1;
+                    while self.pos < self.source.len()
+                        && self.source[self.pos].is_ascii_digit()
+                    {
+                        self.pos += 1;
+                    }
+                } else {
+                    return Err(CompileError::lex(
+                        Span::new(self.pos, self.pos + 1),
+                        "expected digit after '.' in float literal",
+                    ));
+                }
+            } else {
+                return Err(CompileError::lex(
+                    Span::new(self.pos, self.pos + 1),
+                    "expected digit after '.' in float literal",
+                ));
+            }
+        }
+
+        // Exponent part.
+        if matches!(self.peek_byte(0), Some(b'e') | Some(b'E')) {
+            is_float = true;
+            self.pos += 1;
+            if matches!(self.peek_byte(0), Some(b'+') | Some(b'-')) {
+                self.pos += 1;
+            }
+            let exp_start = self.pos;
+            while self.pos < self.source.len() && self.source[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+            if self.pos == exp_start {
+                return Err(CompileError::lex(
+                    Span::new(self.pos, self.pos + 1),
+                    "expected digits in exponent",
+                ));
+            }
+        }
+
+        let span = Span::new(start, self.pos);
+        let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
+        let kind = if is_float {
+            TokenKind::Float(text.parse::<f64>().map_err(|e| {
+                CompileError::lex(span, format!("invalid float literal: {e}"))
+            })?)
+        } else {
+            TokenKind::Int(text.parse::<i64>().map_err(|e| {
+                CompileError::lex(span, format!("invalid int literal: {e}"))
+            })?)
+        };
+        self.tokens.push(Token { kind, span });
+        Ok(())
     }
 }
 
@@ -235,5 +302,37 @@ mod tests {
             kinds("-> -"),
             vec![TokenKind::Arrow, TokenKind::Minus, TokenKind::Eof]
         );
+    }
+
+    #[test]
+    fn integer_literals() {
+        assert_eq!(
+            kinds("42 0 123456"),
+            vec![
+                TokenKind::Int(42),
+                TokenKind::Int(0),
+                TokenKind::Int(123456),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn float_literals() {
+        let ks = kinds("3.14 0.0 1.5e-10");
+        assert_eq!(ks.len(), 4);
+        match (&ks[0], &ks[1], &ks[2]) {
+            (TokenKind::Float(a), TokenKind::Float(b), TokenKind::Float(c)) => {
+                assert!((a - 3.14).abs() < 1e-12);
+                assert!((b - 0.0).abs() < 1e-12);
+                assert!((c - 1.5e-10).abs() < 1e-20);
+            }
+            _ => panic!("expected three floats, got {ks:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_dot_is_error() {
+        assert!(tokenize("1.").is_err());
     }
 }
