@@ -1,0 +1,16 @@
+// Forward Euler integration of the linear decay ODE  x' = -k x.
+// Demonstrates `for` range loops, function calls, and reassignment in a block.
+
+function step(x: Scalar, k: Scalar, dt: Scalar): Scalar
+  return x - k * x * dt
+end
+
+function simulate(x0: Scalar, k: Scalar, dt: Scalar, n: Int): Scalar
+  let x: Scalar = x0
+  for i = 0, n do
+    x = step(x, k, dt)
+  end
+  return x
+end
+
+let result: Scalar = simulate(1.0, 0.5, 0.01, 100)

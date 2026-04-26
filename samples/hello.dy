@@ -1,0 +1,2 @@
+// Smallest illustrative program: a unit-annotated scalar.
+let g: Scalar<m/s^2> = 9.8
