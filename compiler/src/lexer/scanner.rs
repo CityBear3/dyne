@@ -92,6 +92,7 @@ impl<'a> Scanner<'a> {
                 b',' => self.push_single(TokenKind::Comma),
                 b'.' => self.push_single(TokenKind::Dot),
                 b'0'..=b'9' => self.scan_number()?,
+                b'"' => self.scan_string()?,
                 _ => {
                     return Err(CompileError::lex(
                         Span::new(self.pos, self.pos + 1),
@@ -218,6 +219,64 @@ impl<'a> Scanner<'a> {
         self.tokens.push(Token { kind, span });
         Ok(())
     }
+
+    fn scan_string(&mut self) -> Result<(), CompileError> {
+        let start = self.pos;
+        self.pos += 1; // consume opening "
+        let mut buf = String::new();
+        loop {
+            if self.pos >= self.source.len() {
+                return Err(CompileError::lex(
+                    Span::new(start, self.pos),
+                    "unterminated string literal",
+                ));
+            }
+            let b = self.source[self.pos];
+            match b {
+                b'"' => {
+                    self.pos += 1;
+                    self.tokens.push(Token {
+                        kind: TokenKind::Str(buf),
+                        span: Span::new(start, self.pos),
+                    });
+                    return Ok(());
+                }
+                b'\\' => {
+                    self.pos += 1;
+                    let esc = self.source.get(self.pos).copied().ok_or_else(|| {
+                        CompileError::lex(
+                            Span::new(self.pos - 1, self.pos),
+                            "unterminated escape in string",
+                        )
+                    })?;
+                    let c = match esc {
+                        b'n' => '\n',
+                        b't' => '\t',
+                        b'\\' => '\\',
+                        b'"' => '"',
+                        other => {
+                            return Err(CompileError::lex(
+                                Span::new(self.pos - 1, self.pos + 1),
+                                format!("unknown escape '\\{}'", other as char),
+                            ));
+                        }
+                    };
+                    buf.push(c);
+                    self.pos += 1;
+                }
+                b'\n' => {
+                    return Err(CompileError::lex(
+                        Span::new(self.pos, self.pos + 1),
+                        "newline in string literal",
+                    ));
+                }
+                _ => {
+                    buf.push(b as char);
+                    self.pos += 1;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +394,33 @@ mod tests {
     #[test]
     fn trailing_dot_is_error() {
         assert!(tokenize("1.").is_err());
+    }
+
+    #[test]
+    fn simple_string_literal() {
+        let ks = kinds(r#""Hello, World""#);
+        assert_eq!(
+            ks,
+            vec![TokenKind::Str("Hello, World".into()), TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn string_with_escapes() {
+        let ks = kinds(r#""a\nb\tc\\d\"e""#);
+        assert_eq!(
+            ks,
+            vec![TokenKind::Str("a\nb\tc\\d\"e".into()), TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn unterminated_string_is_error() {
+        assert!(tokenize("\"abc").is_err());
+    }
+
+    #[test]
+    fn unknown_escape_is_error() {
+        assert!(tokenize(r#""\q""#).is_err());
     }
 }
