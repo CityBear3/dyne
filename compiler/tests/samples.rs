@@ -13,8 +13,7 @@ fn samples_dir() -> PathBuf {
 #[test]
 fn every_sample_parses() {
     let dir = samples_dir();
-    let entries = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
 
     let mut count = 0;
     for entry in entries {
@@ -22,8 +21,8 @@ fn every_sample_parses() {
         if path.extension().and_then(|e| e.to_str()) != Some("dy") {
             continue;
         }
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+        let source =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
         if let Err(err) = dyne::compile(&source) {
             panic!("{path:?} failed to parse: {err:?}");
         }
