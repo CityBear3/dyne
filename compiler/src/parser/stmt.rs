@@ -150,8 +150,10 @@ fn parse_variant_decl(p: &mut Parser) -> Result<crate::ast::EnumVariant, Compile
         TokenKind::Ident(n) => n.clone(),
         _ => return Err(CompileError::parse(name_tok.span, "expected variant name")),
     };
+    let name_span = name_tok.span;
     p.advance();
     let mut payload = Vec::new();
+    let mut end_span = name_span;
     if p.eat(&TokenKind::LParen) {
         p.consume_newlines();
         if !p.at(&TokenKind::RParen) {
@@ -166,13 +168,16 @@ fn parse_variant_decl(p: &mut Parser) -> Result<crate::ast::EnumVariant, Compile
                 p.consume_newlines();
             }
         }
+        // Capture span of `)` BEFORE consuming, so the variant span doesn't
+        // overshoot into the following Newline / Comma / `end` / Eof.
+        // Mirrors the call-args precedent in parse_postfix.
+        end_span = p.current_span();
         p.expect(&TokenKind::RParen, "')'")?;
     }
-    let end = p.current_span();
     Ok(EnumVariant {
         name,
         payload,
-        span: Span::merge(start, end),
+        span: Span::merge(start, end_span),
     })
 }
 
@@ -795,5 +800,29 @@ mod tests {
         } else {
             panic!("expected Enum item");
         }
+    }
+
+    #[test]
+    fn enum_def_variant_without_newline_rejected() {
+        let toks = tokenize("enum Bad\n  Red Green\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected newline after enum variant"));
+    }
+
+    #[test]
+    fn enum_def_missing_type_param_name_rejected() {
+        let toks = tokenize("enum Bad<1>\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected type parameter name"));
+    }
+
+    #[test]
+    fn enum_def_missing_variant_name_rejected() {
+        let toks = tokenize("enum Bad\n  1\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected variant name"));
     }
 }

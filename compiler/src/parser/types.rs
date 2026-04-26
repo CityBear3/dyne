@@ -69,6 +69,7 @@ pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, Compi
         return Ok(Vec::new());
     }
     let mut params = Vec::new();
+    // Empty `<>` is permitted (Rust-permissive); semantic phase may tighten this if desired.
     if !p.at(&TokenKind::Gt) {
         params.push(parse_type_param_name(p)?);
         while p.eat(&TokenKind::Comma) {
