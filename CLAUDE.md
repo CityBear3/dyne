@@ -8,8 +8,9 @@ Dyne is a compiled programming language for computational physics (Hamiltonian m
 
 - `docs/language-spec.md` — authoritative language specification (lexical structure, syntax, type system, semantics, stdlib overview). This is the contract the compiler must implement; when implementation and spec disagree, one of them is wrong.
 - `docs/product-spec.md` — motivation and feature overview for end users.
-- `compiler/` — the compiler, written in Rust (edition 2024). Currently a greenfield skeleton: `src/main.rs` contains only a `Lexer` stub and one smoke test. There are no dependencies in `Cargo.toml` yet.
+- `compiler/` — the compiler, written in Rust (edition 2024), zero runtime dependencies. Stage 1 frontend (lexer, parser, AST, error model, CLI) is implemented; type checker, semantic analysis, and runtime are not yet built. Public API is `pub fn compile(source: &str) -> Result<Program, CompileError>` in `src/lib.rs`.
 - `Makefile` — placeholder only (`clean` / `build` targets operating on an unused `build/` dir). The real build is cargo.
+- `README.md` — top-level repository entry point.
 
 ## Common commands
 
@@ -24,7 +25,9 @@ All commands run from `compiler/` unless noted.
 
 ## Architecture notes
 
-The compiler is at ground zero — there is no lexer, parser, type checker, or codegen yet. When implementing any of these, derive requirements from `docs/language-spec.md` rather than inferring from existing code.
+The Stage 1 frontend (lexer, parser, AST, error model) is implemented and tested. Subsequent phases (type checker, semantic analysis, interpreter/codegen) are not yet started. When implementing new phases, derive requirements from `docs/language-spec.md` and consume the existing AST defined in `compiler/src/ast/` rather than inferring from incidental code.
+
+The AST already covers the full language (Stage 1-4 nodes are defined), but the parser only constructs Stage 1 nodes for now. Extending the parser to Stage 2 (struct / enum / match) and beyond should not require AST changes.
 
 Language traits that shape compiler design and should be kept in mind when adding phases:
 
