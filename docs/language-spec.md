@@ -37,18 +37,30 @@ Enclosed in double quotes.
 
 #### Vector Literals
 
-Elements are separated by commas within square brackets.
+Elements are separated by commas within square brackets. Newlines inside the brackets are ignored, and a trailing comma is allowed.
 
 ```
 [1.0, 2.0, 3.0]
+
+[
+  1.0,
+  2.0,
+  3.0,
+]
 ```
 
 #### Matrix Literals
 
-Nested vector literals.
+Nested vector literals. As with vectors, newlines inside the brackets are ignored and a trailing comma is allowed.
 
 ```
 [[1.0, 0.0], [0.0, 1.0]]
+
+[
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
 ```
 
 ### 2.3 Operators

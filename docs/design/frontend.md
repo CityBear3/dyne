@@ -466,15 +466,18 @@ impl<'t> Parser<'t> {
 | 4 | `==` `!=` `<` `>` `<=` `>=` | 左 |
 | 5 | `+` `-` | 左 |
 | 6 | `*` `/` | 左 |
-| 7 | `^` | **右** |
-| 8 | 単項 `-` | — |
+| 7 | 単項 `-` | — |
+| 8 | `^` | **右** |
 | 9 | 関数呼び出し / インデックス / フィールドアクセス | 左 |
+
+`not` と 単項 `-` は Pratt parser の prefix operator として実装する。`not` は比較・算術以上を取り込む（`not 1 + 2 == not (1 + 2)`、Python と同じ）、単項 `-` は `^` を取り込むが call/index/field よりは弱い（`-x^2 == -(x^2)`、Python/Fortran と同じ。物理計算で頻出する Gaussian `e^(-x^2)` などが直感通りに書ける）。
 
 #### 文境界
 
-- 文は `Newline` で区切られる
-- `then` / `do` の直後の `Newline` はブロック開始とみなす
+- 文は `Newline` で区切られる。文末には `Newline` / `Eof` / ブロック終端トークン (`end` / `else` / `elseif`) のいずれかが必須
+- `then` / `do` の直後の `Newline` はブロック開始とみなす（任意 — 1 行 if/while/for もサポート、例 `if x > 0 then return 1 end`）
 - `end` / `else` / `elseif` がブロックの閉じ
+- Vec / Mat リテラル内 (`[ ... ]`) では `Newline` を無視する（multi-line 記法のサポート）。trailing comma も許可
 
 #### 型引数のパース
 
