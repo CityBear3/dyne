@@ -1,4 +1,4 @@
-//! Calculator compiler library.
+//! Dyne compiler library.
 
 pub mod ast;
 pub mod error;

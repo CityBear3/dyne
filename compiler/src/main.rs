@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use calculator::{compile, source::SourceFile};
+use dyne::{compile, source::SourceFile};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
