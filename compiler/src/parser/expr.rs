@@ -69,6 +69,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
         }
         TokenKind::LBracket => parse_vec_or_mat_lit(p),
         TokenKind::If => parse_if_expr(p),
+        TokenKind::Match => parse_match_expr(p),
         _ => Err(CompileError::parse(
             tok.span,
             format!("expected expression, found {:?}", tok.kind),
@@ -371,9 +372,6 @@ use crate::ast::{Pattern, PatternKind};
 
 const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are not supported because NaN \u{2260} NaN and rounding error makes equality matches unreliable; use a guard such as `if abs(x - 0.5) < eps` instead";
 
-// Transient: parse_pattern is only consumed by tests until Task 8 wires it
-// into parse_match_expr. Removed in Task 8.
-#[allow(dead_code)]
 pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
     let start = p.current_span();
     let tok = p.peek().clone();
@@ -476,6 +474,84 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
             format!("expected pattern, found {:?}", tok.kind),
         )),
     }
+}
+
+fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
+    use crate::ast::MatchArm;
+    let start = p.current_span();
+    p.expect(&TokenKind::Match, "'match'")?;
+    let scrutinee = parse_expr(p)?;
+    p.consume_newlines();
+
+    let mut arms = Vec::new();
+    while !matches!(p.peek_kind(), TokenKind::End) {
+        if matches!(p.peek_kind(), TokenKind::Eof) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "unexpected end of input inside match expression",
+            ));
+        }
+        p.expect(&TokenKind::Case, "'case'")?;
+        let pattern = parse_pattern(p)?;
+        p.expect(&TokenKind::Then, "'then'")?;
+        let body = parse_match_arm_body(p)?;
+        let arm_span = Span::merge(pattern.span, body.span);
+        arms.push(MatchArm {
+            pattern,
+            body,
+            span: arm_span,
+        });
+    }
+
+    if arms.is_empty() {
+        return Err(CompileError::parse(
+            p.current_span(),
+            "match expression requires at least one `case` arm",
+        ));
+    }
+
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(Expr {
+        kind: ExprKind::Match(Box::new(scrutinee), arms),
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileError> {
+    use crate::ast::Block;
+    use crate::parser::stmt::parse_stmt;
+    let start = p.current_span();
+    p.consume_newlines();
+    let mut stmts = Vec::new();
+    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Case) {
+        if matches!(p.peek_kind(), TokenKind::Eof) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "unexpected end of input inside match arm body",
+            ));
+        }
+        let stmt = parse_stmt(p)?;
+        stmts.push(stmt);
+        if !matches!(
+            p.peek_kind(),
+            TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Case
+        ) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after match arm statement, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
+        p.consume_newlines();
+    }
+    let end = p.current_span();
+    Ok(Block {
+        stmts,
+        span: Span::merge(start, end),
+    })
 }
 
 #[cfg(test)]
@@ -933,6 +1009,77 @@ mod tests {
         let mut p = Parser::new(&toks);
         let err = super::parse_expr(&mut p).unwrap_err();
         assert!(err.message.contains("expected field name"));
+    }
+
+    #[test]
+    fn match_simple() {
+        let e = parse("match x\n  case Some(v) then\n    v\n  case None then\n    0\nend");
+        match e.kind {
+            ExprKind::Match(scrutinee, arms) => {
+                assert!(matches!(scrutinee.kind, ExprKind::Ident(_)));
+                assert_eq!(arms.len(), 2);
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn match_with_wildcard() {
+        let e = parse("match x\n  case 0 then\n    1\n  case _ then\n    0\nend");
+        if let ExprKind::Match(_, arms) = e.kind {
+            assert_eq!(arms.len(), 2);
+            assert!(matches!(
+                arms[0].pattern.kind,
+                crate::ast::PatternKind::IntLit(0)
+            ));
+            assert!(matches!(
+                arms[1].pattern.kind,
+                crate::ast::PatternKind::Wildcard
+            ));
+        } else {
+            panic!("expected Match");
+        }
+    }
+
+    #[test]
+    fn match_with_int_literal_payload_arm() {
+        let e = parse(
+            "match x\n  case Some(0) then\n    1\n  case Some(n) then\n    n\n  case None then\n    0\nend",
+        );
+        if let ExprKind::Match(_, arms) = e.kind {
+            assert_eq!(arms.len(), 3);
+        } else {
+            panic!("expected Match");
+        }
+    }
+
+    #[test]
+    fn match_zero_arms_rejected() {
+        let toks = tokenize("match x\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("at least one"));
+    }
+
+    #[test]
+    fn match_arm_multi_statement_body() {
+        let src = "match x\n  case Some(v) then\n    let r: Int = v + 1\n    r\n  case None then\n    0\nend";
+        let e = parse(src);
+        if let ExprKind::Match(_, arms) = e.kind {
+            assert_eq!(arms[0].body.stmts.len(), 2);
+            assert_eq!(arms[1].body.stmts.len(), 1);
+        } else {
+            panic!("expected Match");
+        }
+    }
+
+    #[test]
+    fn match_used_in_let_init() {
+        let src = "let n: Int = match opt\n  case Some(v) then v\n  case None then 0\nend";
+        let toks = tokenize(src).unwrap();
+        let mut parser = Parser::new(&toks);
+        let prog = crate::parser::stmt::parse_program(&mut parser).unwrap();
+        assert_eq!(prog.items.len(), 1);
     }
 
     fn parse_pat(source: &str) -> crate::ast::Pattern {
