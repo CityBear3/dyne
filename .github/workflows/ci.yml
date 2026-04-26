@@ -15,9 +15,11 @@ jobs:
         working-directory: compiler
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - name: Set up Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add clippy rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: compiler
