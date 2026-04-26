@@ -1,3 +1,5 @@
+[![CI](https://github.com/CityBear3/dyne/actions/workflows/ci.yml/badge.svg)](https://github.com/CityBear3/dyne/actions/workflows/ci.yml)
+
 # Dyne
 
 A compiled programming language for computational physics.
