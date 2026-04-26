@@ -93,6 +93,7 @@ impl<'a> Scanner<'a> {
                 b'.' => self.push_single(TokenKind::Dot),
                 b'0'..=b'9' => self.scan_number()?,
                 b'"' => self.scan_string()?,
+                b if b.is_ascii_alphabetic() || b == b'_' => self.scan_ident(),
                 _ => {
                     return Err(CompileError::lex(
                         Span::new(self.pos, self.pos + 1),
@@ -218,6 +219,23 @@ impl<'a> Scanner<'a> {
         };
         self.tokens.push(Token { kind, span });
         Ok(())
+    }
+
+    fn scan_ident(&mut self) {
+        let start = self.pos;
+        while self.pos < self.source.len() {
+            let b = self.source[self.pos];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        let span = Span::new(start, self.pos);
+        let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
+        let kind = TokenKind::keyword(text)
+            .unwrap_or_else(|| TokenKind::Ident(text.to_string()));
+        self.tokens.push(Token { kind, span });
     }
 
     fn scan_string(&mut self) -> Result<(), CompileError> {
@@ -433,5 +451,60 @@ mod tests {
     fn utf8_string_literal() {
         let ks = kinds(r#""café 日本""#);
         assert_eq!(ks, vec![TokenKind::Str("café 日本".into()), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn identifier() {
+        let ks = kinds("foo bar_1 _underscore");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Ident("foo".into()),
+                TokenKind::Ident("bar_1".into()),
+                TokenKind::Ident("_underscore".into()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn keywords_recognized() {
+        let ks = kinds("let function end return if then else for while true false");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Let, TokenKind::Function, TokenKind::End, TokenKind::Return,
+                TokenKind::If, TokenKind::Then, TokenKind::Else,
+                TokenKind::For, TokenKind::While,
+                TokenKind::True, TokenKind::False,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn logical_keywords() {
+        let ks = kinds("and or not");
+        assert_eq!(
+            ks,
+            vec![TokenKind::And, TokenKind::Or, TokenKind::Not, TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn full_let_statement() {
+        let ks = kinds("let x: Scalar = 1.0");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Let,
+                TokenKind::Ident("x".into()),
+                TokenKind::Colon,
+                TokenKind::Ident("Scalar".into()),
+                TokenKind::Eq,
+                TokenKind::Float(1.0),
+                TokenKind::Eof,
+            ]
+        );
     }
 }
