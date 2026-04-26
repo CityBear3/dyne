@@ -1,6 +1,8 @@
 //! Statement and top-level item parser.
 
-use crate::ast::{Block, ForStmt, LetStmt, Program, Stmt, StmtKind, WhileStmt};
+use crate::ast::{
+    Block, ForStmt, FunctionDef, Item, LetStmt, Param, Program, Stmt, StmtKind, WhileStmt,
+};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
@@ -13,18 +15,8 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
     let start = p.current_span();
     let mut items = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::Eof) {
-        // Task 23 will wire top-level items. For now, allow only a bare
-        // sequence of statements as a smoke-test path.
-        let stmt = parse_stmt(p)?;
-        items.push(crate::ast::Item::Let(match stmt.kind {
-            StmtKind::Let(l) => l,
-            _ => {
-                return Err(CompileError::parse(
-                    stmt.span,
-                    "only `let` is supported at top level until Task 23",
-                ));
-            }
-        }));
+        let item = parse_item(p)?;
+        items.push(item);
         p.consume_newlines();
     }
     let end = p.current_span();
@@ -32,6 +24,27 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
         items,
         span: Span::merge(start, end),
     })
+}
+
+fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
+    match p.peek_kind() {
+        TokenKind::Function => Ok(Item::Function(parse_function_def(p)?)),
+        TokenKind::Let => {
+            let stmt = parse_let_stmt(p)?;
+            if let StmtKind::Let(l) = stmt.kind {
+                Ok(Item::Let(l))
+            } else {
+                unreachable!()
+            }
+        }
+        _ => Err(CompileError::parse(
+            p.current_span(),
+            format!(
+                "expected top-level item (function or let), found {:?}",
+                p.peek_kind()
+            ),
+        )),
+    }
 }
 
 pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
@@ -212,6 +225,61 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
+fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
+    let start = p.current_span();
+    p.expect(&TokenKind::Function, "'function'")?;
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => {
+            return Err(CompileError::parse(
+                name_tok.span,
+                "expected function name",
+            ));
+        }
+    };
+    p.advance();
+    p.expect(&TokenKind::LParen, "'('")?;
+    let mut params = Vec::new();
+    if !p.at(&TokenKind::RParen) {
+        params.push(parse_param(p)?);
+        while p.eat(&TokenKind::Comma) {
+            params.push(parse_param(p)?);
+        }
+    }
+    p.expect(&TokenKind::RParen, "')'")?;
+    p.expect(&TokenKind::Colon, "':'")?;
+    let return_ty = parse_type(p)?;
+    let body = parse_block_until(p, &[TokenKindKind::End])?;
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(FunctionDef {
+        name,
+        params,
+        return_ty,
+        body,
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_param(p: &mut Parser) -> Result<Param, CompileError> {
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => {
+            return Err(CompileError::parse(
+                name_tok.span,
+                "expected parameter name",
+            ));
+        }
+    };
+    p.advance();
+    p.expect(&TokenKind::Colon, "':'")?;
+    let ty = parse_type(p)?;
+    let span = Span::merge(name_tok.span, ty.span);
+    Ok(Param { name, ty, span })
+}
+
 /// Parse a block that ends at any of: End, Else, Elseif.
 pub(crate) fn parse_block_until(
     p: &mut Parser,
@@ -365,5 +433,41 @@ mod tests {
             }
             _ => panic!("expected For::IterKV"),
         }
+    }
+
+    fn parse_prog(source: &str) -> Program {
+        let toks = tokenize(source).unwrap();
+        let mut p = Parser::new(&toks);
+        parse_program(&mut p).unwrap()
+    }
+
+    #[test]
+    fn program_with_function() {
+        let p = parse_prog(
+            "function add(a: Scalar, b: Scalar): Scalar\n  return a + b\nend",
+        );
+        assert_eq!(p.items.len(), 1);
+        match &p.items[0] {
+            crate::ast::Item::Function(f) => {
+                assert_eq!(f.name, "add");
+                assert_eq!(f.params.len(), 2);
+            }
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn program_with_let_and_function() {
+        let src = "let g: Scalar = 9.8\nfunction f(x: Scalar): Scalar\n  return x * g\nend";
+        let p = parse_prog(src);
+        assert_eq!(p.items.len(), 2);
+        assert!(matches!(p.items[0], crate::ast::Item::Let(_)));
+        assert!(matches!(p.items[1], crate::ast::Item::Function(_)));
+    }
+
+    #[test]
+    fn empty_program() {
+        let p = parse_prog("");
+        assert_eq!(p.items.len(), 0);
     }
 }
