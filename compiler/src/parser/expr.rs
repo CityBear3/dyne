@@ -91,6 +91,63 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     })
 }
 
+fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
+    let mut expr = parse_primary(p)?;
+    loop {
+        match p.peek_kind() {
+            TokenKind::LParen => {
+                p.advance();
+                let mut args = Vec::new();
+                if !p.at(&TokenKind::RParen) {
+                    args.push(parse_expr(p)?);
+                    while p.eat(&TokenKind::Comma) {
+                        args.push(parse_expr(p)?);
+                    }
+                }
+                let end = p.peek().span;
+                p.expect(&TokenKind::RParen, "')'")?;
+                let span = Span::merge(expr.span, end);
+                expr = Expr {
+                    kind: ExprKind::Call(Box::new(expr), args),
+                    span,
+                };
+            }
+            TokenKind::LBracket => {
+                p.advance();
+                let idx = parse_expr(p)?;
+                let end = p.peek().span;
+                p.expect(&TokenKind::RBracket, "']'")?;
+                let span = Span::merge(expr.span, end);
+                expr = Expr {
+                    kind: ExprKind::Index(Box::new(expr), Box::new(idx)),
+                    span,
+                };
+            }
+            TokenKind::Dot => {
+                p.advance();
+                let field_tok = p.peek().clone();
+                let field = match &field_tok.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => {
+                        return Err(CompileError::parse(
+                            field_tok.span,
+                            format!("expected field name, found {:?}", field_tok.kind),
+                        ));
+                    }
+                };
+                p.advance();
+                let span = Span::merge(expr.span, field_tok.span);
+                expr = Expr {
+                    kind: ExprKind::FieldAccess(Box::new(expr), field),
+                    span,
+                };
+            }
+            _ => break,
+        }
+    }
+    Ok(expr)
+}
+
 fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
     p.expect(&TokenKind::LBracket, "'['")?;
     let mut row = Vec::new();
@@ -144,7 +201,7 @@ fn parse_unary(p: &mut Parser) -> Result<Expr, CompileError> {
                 span,
             })
         }
-        _ => parse_primary(p),
+        _ => parse_postfix(p),
     }
 }
 
@@ -302,5 +359,56 @@ mod tests {
             },
             _ => panic!("expected Or at root"),
         }
+    }
+
+    #[test]
+    fn function_call() {
+        let e = parse("f(1, 2)");
+        match e.kind {
+            ExprKind::Call(callee, args) => {
+                assert_eq!(callee.kind, ExprKind::Ident("f".into()));
+                assert_eq!(args.len(), 2);
+            }
+            _ => panic!("expected Call"),
+        }
+    }
+
+    #[test]
+    fn indexing() {
+        let e = parse("a[0]");
+        match e.kind {
+            ExprKind::Index(obj, idx) => {
+                assert_eq!(obj.kind, ExprKind::Ident("a".into()));
+                assert_eq!(idx.kind, ExprKind::IntLit(0));
+            }
+            _ => panic!("expected Index"),
+        }
+    }
+
+    #[test]
+    fn field_access() {
+        let e = parse("p.q");
+        match e.kind {
+            ExprKind::FieldAccess(obj, field) => {
+                assert_eq!(obj.kind, ExprKind::Ident("p".into()));
+                assert_eq!(field, "q");
+            }
+            _ => panic!("expected FieldAccess"),
+        }
+    }
+
+    #[test]
+    fn chained_postfix() {
+        // a.b[0](x)
+        let e = parse("a.b[0](x)");
+        if let ExprKind::Call(callee, _) = e.kind
+            && let ExprKind::Index(obj, _) = callee.kind
+            && let ExprKind::FieldAccess(inner, field) = obj.kind
+        {
+            assert_eq!(inner.kind, ExprKind::Ident("a".into()));
+            assert_eq!(field, "b");
+            return;
+        }
+        panic!("chained postfix structure mismatch");
     }
 }
