@@ -30,6 +30,7 @@ pub(crate) enum TokenKind {
     Do,
     While,
     Match,
+    Case,
     Struct,
     Enum,
     Import,
@@ -84,6 +85,7 @@ impl TokenKind {
             "do" => TokenKind::Do,
             "while" => TokenKind::While,
             "match" => TokenKind::Match,
+            "case" => TokenKind::Case,
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
             "import" => TokenKind::Import,
@@ -115,5 +117,10 @@ mod tests {
             span: Span::new(0, 2),
         };
         assert_eq!(t.kind, TokenKind::Int(42));
+    }
+
+    #[test]
+    fn keyword_case() {
+        assert_eq!(TokenKind::keyword("case"), Some(TokenKind::Case));
     }
 }
