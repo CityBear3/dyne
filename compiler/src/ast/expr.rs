@@ -35,9 +35,19 @@ pub enum ExprKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Pow,
-    Eq, Neq, Lt, Gt, Le, Ge,
-    And, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,8 +57,8 @@ pub enum UnaryOp {
 }
 
 // Forward declarations from sibling modules:
-use crate::ast::stmt::Block;
 use crate::ast::item::{LambdaExpr, MatchArm};
+use crate::ast::stmt::Block;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfExpr {
@@ -73,8 +83,14 @@ mod tests {
 
     #[test]
     fn construct_binop() {
-        let lhs = Expr { kind: ExprKind::IntLit(1), span: Span::new(0, 1) };
-        let rhs = Expr { kind: ExprKind::IntLit(2), span: Span::new(4, 5) };
+        let lhs = Expr {
+            kind: ExprKind::IntLit(1),
+            span: Span::new(0, 1),
+        };
+        let rhs = Expr {
+            kind: ExprKind::IntLit(2),
+            span: Span::new(4, 5),
+        };
         let e = Expr {
             kind: ExprKind::BinOp(BinOp::Add, Box::new(lhs), Box::new(rhs)),
             span: Span::new(0, 5),

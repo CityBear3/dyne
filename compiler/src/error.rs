@@ -64,11 +64,7 @@ impl CompileError {
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = self.kind.label();
-        write!(
-            f,
-            "{kind} at offset {}: {}",
-            self.span.start, self.message
-        )
+        write!(f, "{kind} at offset {}: {}", self.span.start, self.message)
     }
 }
 
@@ -91,10 +87,7 @@ mod tests {
     #[test]
     fn display_short_form() {
         let err = CompileError::parse(Span::new(5, 6), "expected ')'");
-        assert_eq!(
-            format!("{err}"),
-            "parse error at offset 5: expected ')'"
-        );
+        assert_eq!(format!("{err}"), "parse error at offset 5: expected ')'");
     }
 
     #[test]

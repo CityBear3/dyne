@@ -1,8 +1,8 @@
 //! Syntax analyzer.
 
-pub(crate) mod types;
 pub(crate) mod expr;
 pub(crate) mod stmt;
+pub(crate) mod types;
 
 use crate::ast::Program;
 use crate::error::CompileError;
@@ -58,7 +58,11 @@ impl<'t> Parser<'t> {
         }
     }
 
-    pub(crate) fn expect(&mut self, kind: &TokenKind, ctx: &str) -> Result<&'t Token, CompileError> {
+    pub(crate) fn expect(
+        &mut self,
+        kind: &TokenKind,
+        ctx: &str,
+    ) -> Result<&'t Token, CompileError> {
         if self.at(kind) {
             Ok(self.advance())
         } else {

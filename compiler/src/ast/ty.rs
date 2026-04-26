@@ -52,10 +52,7 @@ mod tests {
     #[test]
     fn vec3_generic() {
         let t = Type {
-            kind: TypeKind::Generic(
-                "Vec".into(),
-                vec![TypeArg::Int(3)],
-            ),
+            kind: TypeKind::Generic("Vec".into(), vec![TypeArg::Int(3)]),
             span: Span::new(0, 6),
         };
         if let TypeKind::Generic(name, args) = &t.kind {
@@ -72,10 +69,7 @@ mod tests {
             span: Span::new(7, 9),
         };
         let t = Type {
-            kind: TypeKind::Generic(
-                "Scalar".into(),
-                vec![TypeArg::Unit(unit)],
-            ),
+            kind: TypeKind::Generic("Scalar".into(), vec![TypeArg::Unit(unit)]),
             span: Span::new(0, 10),
         };
         if let TypeKind::Generic(name, args) = &t.kind {

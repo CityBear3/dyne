@@ -54,9 +54,7 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
         TokenKind::Return => parse_return_stmt(p),
         TokenKind::While => parse_while_stmt(p),
         TokenKind::For => parse_for_stmt(p),
-        TokenKind::Ident(_) if matches!(p.peek_ahead(1), TokenKind::Eq) => {
-            parse_assign_stmt(p)
-        }
+        TokenKind::Ident(_) if matches!(p.peek_ahead(1), TokenKind::Eq) => parse_assign_stmt(p),
         _ => parse_expr_stmt(p),
     }
 }
@@ -233,10 +231,7 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
     let name = match &name_tok.kind {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(
-                name_tok.span,
-                "expected function name",
-            ));
+            return Err(CompileError::parse(name_tok.span, "expected function name"));
         }
     };
     p.advance();
@@ -310,10 +305,7 @@ pub(crate) fn parse_block_until(
 
 /// Require a statement boundary: Newline / Eof / a block terminator.
 /// Per Design Doc §6.6, statements must end with one of these.
-fn require_stmt_terminator(
-    p: &Parser,
-    terminators: &[TokenKindKind],
-) -> Result<(), CompileError> {
+fn require_stmt_terminator(p: &Parser, terminators: &[TokenKindKind]) -> Result<(), CompileError> {
     if matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof)
         || is_at_terminator(p, terminators)
     {
@@ -463,9 +455,7 @@ mod tests {
 
     #[test]
     fn program_with_function() {
-        let p = parse_prog(
-            "function add(a: Scalar, b: Scalar): Scalar\n  return a + b\nend",
-        );
+        let p = parse_prog("function add(a: Scalar, b: Scalar): Scalar\n  return a + b\nend");
         assert_eq!(p.items.len(), 1);
         match &p.items[0] {
             crate::ast::Item::Function(f) => {

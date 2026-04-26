@@ -122,7 +122,11 @@ impl<'a> Scanner<'a> {
                 _ => break,
             }
         }
-        if let Some(Token { kind: TokenKind::Newline, .. }) = self.tokens.last() {
+        if let Some(Token {
+            kind: TokenKind::Newline,
+            ..
+        }) = self.tokens.last()
+        {
             return;
         }
         self.tokens.push(Token {
@@ -168,9 +172,7 @@ impl<'a> Scanner<'a> {
                 if next.is_ascii_digit() {
                     is_float = true;
                     self.pos += 1;
-                    while self.pos < self.source.len()
-                        && self.source[self.pos].is_ascii_digit()
-                    {
+                    while self.pos < self.source.len() && self.source[self.pos].is_ascii_digit() {
                         self.pos += 1;
                     }
                 } else {
@@ -209,13 +211,15 @@ impl<'a> Scanner<'a> {
         let span = Span::new(start, self.pos);
         let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
         let kind = if is_float {
-            TokenKind::Float(text.parse::<f64>().map_err(|e| {
-                CompileError::lex(span, format!("invalid float literal: {e}"))
-            })?)
+            TokenKind::Float(
+                text.parse::<f64>()
+                    .map_err(|e| CompileError::lex(span, format!("invalid float literal: {e}")))?,
+            )
         } else {
-            TokenKind::Int(text.parse::<i64>().map_err(|e| {
-                CompileError::lex(span, format!("invalid int literal: {e}"))
-            })?)
+            TokenKind::Int(
+                text.parse::<i64>()
+                    .map_err(|e| CompileError::lex(span, format!("invalid int literal: {e}")))?,
+            )
         };
         self.tokens.push(Token { kind, span });
         Ok(())
@@ -233,8 +237,7 @@ impl<'a> Scanner<'a> {
         }
         let span = Span::new(start, self.pos);
         let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
-        let kind = TokenKind::keyword(text)
-            .unwrap_or_else(|| TokenKind::Ident(text.to_string()));
+        let kind = TokenKind::keyword(text).unwrap_or_else(|| TokenKind::Ident(text.to_string()));
         self.tokens.push(Token { kind, span });
     }
 
@@ -256,8 +259,7 @@ impl<'a> Scanner<'a> {
                     // Source is valid UTF-8 by construction (Scanner is built from &str),
                     // and we only ever push raw source bytes or ASCII escape replacements,
                     // so the accumulated buffer is guaranteed to be valid UTF-8.
-                    let s = String::from_utf8(buf)
-                        .expect("source is valid UTF-8 by construction");
+                    let s = String::from_utf8(buf).expect("source is valid UTF-8 by construction");
                     self.tokens.push(Token {
                         kind: TokenKind::Str(s),
                         span: Span::new(start, self.pos),
@@ -307,7 +309,11 @@ mod tests {
     use super::*;
 
     fn kinds(source: &str) -> Vec<TokenKind> {
-        tokenize(source).unwrap().into_iter().map(|t| t.kind).collect()
+        tokenize(source)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
     }
 
     #[test]
@@ -327,10 +333,7 @@ mod tests {
 
     #[test]
     fn consecutive_newlines_collapsed() {
-        assert_eq!(
-            kinds("\n\n\n"),
-            vec![TokenKind::Newline, TokenKind::Eof]
-        );
+        assert_eq!(kinds("\n\n\n"), vec![TokenKind::Newline, TokenKind::Eof]);
     }
 
     #[test]
@@ -346,8 +349,12 @@ mod tests {
         assert_eq!(
             kinds("+ - * / ^"),
             vec![
-                TokenKind::Plus, TokenKind::Minus, TokenKind::Star,
-                TokenKind::Slash, TokenKind::Caret, TokenKind::Eof,
+                TokenKind::Plus,
+                TokenKind::Minus,
+                TokenKind::Star,
+                TokenKind::Slash,
+                TokenKind::Caret,
+                TokenKind::Eof,
             ]
         );
     }
@@ -357,8 +364,13 @@ mod tests {
         assert_eq!(
             kinds("= == != < > <= >="),
             vec![
-                TokenKind::Eq, TokenKind::EqEq, TokenKind::Neq,
-                TokenKind::Lt, TokenKind::Gt, TokenKind::Le, TokenKind::Ge,
+                TokenKind::Eq,
+                TokenKind::EqEq,
+                TokenKind::Neq,
+                TokenKind::Lt,
+                TokenKind::Gt,
+                TokenKind::Le,
+                TokenKind::Ge,
                 TokenKind::Eof,
             ]
         );
@@ -369,10 +381,15 @@ mod tests {
         assert_eq!(
             kinds("( ) [ ] { } : , ."),
             vec![
-                TokenKind::LParen, TokenKind::RParen,
-                TokenKind::LBracket, TokenKind::RBracket,
-                TokenKind::LBrace, TokenKind::RBrace,
-                TokenKind::Colon, TokenKind::Comma, TokenKind::Dot,
+                TokenKind::LParen,
+                TokenKind::RParen,
+                TokenKind::LBracket,
+                TokenKind::RBracket,
+                TokenKind::LBrace,
+                TokenKind::RBrace,
+                TokenKind::Colon,
+                TokenKind::Comma,
+                TokenKind::Dot,
                 TokenKind::Eof,
             ]
         );
@@ -473,10 +490,17 @@ mod tests {
         assert_eq!(
             ks,
             vec![
-                TokenKind::Let, TokenKind::Function, TokenKind::End, TokenKind::Return,
-                TokenKind::If, TokenKind::Then, TokenKind::Else,
-                TokenKind::For, TokenKind::While,
-                TokenKind::True, TokenKind::False,
+                TokenKind::Let,
+                TokenKind::Function,
+                TokenKind::End,
+                TokenKind::Return,
+                TokenKind::If,
+                TokenKind::Then,
+                TokenKind::Else,
+                TokenKind::For,
+                TokenKind::While,
+                TokenKind::True,
+                TokenKind::False,
                 TokenKind::Eof,
             ]
         );
@@ -487,7 +511,12 @@ mod tests {
         let ks = kinds("and or not");
         assert_eq!(
             ks,
-            vec![TokenKind::And, TokenKind::Or, TokenKind::Not, TokenKind::Eof]
+            vec![
+                TokenKind::And,
+                TokenKind::Or,
+                TokenKind::Not,
+                TokenKind::Eof
+            ]
         );
     }
 

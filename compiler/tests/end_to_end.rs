@@ -1,6 +1,9 @@
 //! End-to-end compilation smoke tests.
 
-use calculator::{compile, ast::{Item, StmtKind, ExprKind, BinOp}};
+use calculator::{
+    ast::{BinOp, ExprKind, Item, StmtKind},
+    compile,
+};
 
 #[test]
 fn harmonic_oscillator_like_snippet() {

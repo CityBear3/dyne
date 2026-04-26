@@ -15,29 +15,47 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
     match &tok.kind {
         TokenKind::Int(n) => {
             p.advance();
-            Ok(Expr { kind: ExprKind::IntLit(*n), span: tok.span })
+            Ok(Expr {
+                kind: ExprKind::IntLit(*n),
+                span: tok.span,
+            })
         }
         TokenKind::Float(n) => {
             p.advance();
-            Ok(Expr { kind: ExprKind::FloatLit(*n), span: tok.span })
+            Ok(Expr {
+                kind: ExprKind::FloatLit(*n),
+                span: tok.span,
+            })
         }
         TokenKind::Str(s) => {
             let s = s.clone();
             p.advance();
-            Ok(Expr { kind: ExprKind::StrLit(s), span: tok.span })
+            Ok(Expr {
+                kind: ExprKind::StrLit(s),
+                span: tok.span,
+            })
         }
         TokenKind::True => {
             p.advance();
-            Ok(Expr { kind: ExprKind::BoolLit(true), span: tok.span })
+            Ok(Expr {
+                kind: ExprKind::BoolLit(true),
+                span: tok.span,
+            })
         }
         TokenKind::False => {
             p.advance();
-            Ok(Expr { kind: ExprKind::BoolLit(false), span: tok.span })
+            Ok(Expr {
+                kind: ExprKind::BoolLit(false),
+                span: tok.span,
+            })
         }
         TokenKind::Ident(name) => {
             let name = name.clone();
             p.advance();
-            Ok(Expr { kind: ExprKind::Ident(name), span: tok.span })
+            Ok(Expr {
+                kind: ExprKind::Ident(name),
+                span: tok.span,
+            })
         }
         TokenKind::LParen => {
             p.advance();
@@ -114,7 +132,11 @@ fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     p.expect(&TokenKind::Then, "'then'")?;
     let then_block = parse_block_until(
         p,
-        &[TokenKindKind::Elseif, TokenKindKind::Else, TokenKindKind::End],
+        &[
+            TokenKindKind::Elseif,
+            TokenKindKind::Else,
+            TokenKindKind::End,
+        ],
     )?;
 
     let mut elseifs = Vec::new();
@@ -124,7 +146,11 @@ fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
         p.expect(&TokenKind::Then, "'then'")?;
         let block_i = parse_block_until(
             p,
-            &[TokenKindKind::Elseif, TokenKindKind::Else, TokenKindKind::End],
+            &[
+                TokenKindKind::Elseif,
+                TokenKindKind::Else,
+                TokenKindKind::End,
+            ],
         )?;
         elseifs.push((cond_i, block_i));
     }
@@ -316,10 +342,7 @@ mod tests {
 
     #[test]
     fn string_literal() {
-        assert_eq!(
-            parse(r#""hello""#).kind,
-            ExprKind::StrLit("hello".into())
-        );
+        assert_eq!(parse(r#""hello""#).kind, ExprKind::StrLit("hello".into()));
     }
 
     #[test]
@@ -652,7 +675,8 @@ mod tests {
 
     #[test]
     fn if_with_elseif() {
-        let source = "if x > 0 then\n  return 1\nelseif x == 0 then\n  return 0\nelse\n  return -1\nend";
+        let source =
+            "if x > 0 then\n  return 1\nelseif x == 0 then\n  return 0\nelse\n  return -1\nend";
         let toks = tokenize(source).unwrap();
         let mut p = Parser::new(&toks);
         let e = parse_expr(&mut p).unwrap();
