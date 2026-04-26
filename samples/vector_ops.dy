@@ -1,0 +1,13 @@
+// 3D vector arithmetic: dot product and squared magnitude.
+// Demonstrates Vec<N> typing and indexing.
+
+function dot(a: Vec<3>, b: Vec<3>): Scalar
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+end
+
+function magnitude_sq(v: Vec<3>): Scalar
+  return dot(v, v)
+end
+
+let v: Vec<3> = [1.0, 2.0, 3.0]
+let m_sq: Scalar = magnitude_sq(v)
