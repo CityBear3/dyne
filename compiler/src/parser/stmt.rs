@@ -236,11 +236,18 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
     };
     p.advance();
     p.expect(&TokenKind::LParen, "'('")?;
+    p.consume_newlines();
     let mut params = Vec::new();
     if !p.at(&TokenKind::RParen) {
         params.push(parse_param(p)?);
+        p.consume_newlines();
         while p.eat(&TokenKind::Comma) {
+            p.consume_newlines();
+            if p.at(&TokenKind::RParen) {
+                break; // trailing comma
+            }
             params.push(parse_param(p)?);
+            p.consume_newlines();
         }
     }
     p.expect(&TokenKind::RParen, "')'")?;
@@ -463,6 +470,41 @@ mod tests {
                 assert_eq!(f.params.len(), 2);
             }
             _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn function_signature_multi_line_params() {
+        // Newlines inside the parameter list `(...)` should be ignored,
+        // mirroring Vec/Mat literal multi-line behaviour.
+        let src = "function add(\n  a: Scalar,\n  b: Scalar\n): Scalar\n  return a + b\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Function(f) = &p.items[0] {
+            assert_eq!(f.params.len(), 2);
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
+    fn function_signature_trailing_comma() {
+        let src = "function add(a: Scalar, b: Scalar,): Scalar\n  return a + b\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Function(f) = &p.items[0] {
+            assert_eq!(f.params.len(), 2);
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
+    fn function_signature_multi_line_with_trailing_comma() {
+        let src = "function add(\n  a: Scalar,\n  b: Scalar,\n): Scalar\n  return a + b\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Function(f) = &p.items[0] {
+            assert_eq!(f.params.len(), 2);
+        } else {
+            panic!("expected Function");
         }
     }
 
