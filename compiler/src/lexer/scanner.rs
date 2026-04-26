@@ -223,7 +223,7 @@ impl<'a> Scanner<'a> {
     fn scan_string(&mut self) -> Result<(), CompileError> {
         let start = self.pos;
         self.pos += 1; // consume opening "
-        let mut buf = String::new();
+        let mut buf: Vec<u8> = Vec::new();
         loop {
             if self.pos >= self.source.len() {
                 return Err(CompileError::lex(
@@ -235,8 +235,13 @@ impl<'a> Scanner<'a> {
             match b {
                 b'"' => {
                     self.pos += 1;
+                    // Source is valid UTF-8 by construction (Scanner is built from &str),
+                    // and we only ever push raw source bytes or ASCII escape replacements,
+                    // so the accumulated buffer is guaranteed to be valid UTF-8.
+                    let s = String::from_utf8(buf)
+                        .expect("source is valid UTF-8 by construction");
                     self.tokens.push(Token {
-                        kind: TokenKind::Str(buf),
+                        kind: TokenKind::Str(s),
                         span: Span::new(start, self.pos),
                     });
                     return Ok(());
@@ -249,11 +254,11 @@ impl<'a> Scanner<'a> {
                             "unterminated escape in string",
                         )
                     })?;
-                    let c = match esc {
-                        b'n' => '\n',
-                        b't' => '\t',
-                        b'\\' => '\\',
-                        b'"' => '"',
+                    let byte = match esc {
+                        b'n' => b'\n',
+                        b't' => b'\t',
+                        b'\\' => b'\\',
+                        b'"' => b'"',
                         other => {
                             return Err(CompileError::lex(
                                 Span::new(self.pos - 1, self.pos + 1),
@@ -261,7 +266,7 @@ impl<'a> Scanner<'a> {
                             ));
                         }
                     };
-                    buf.push(c);
+                    buf.push(byte);
                     self.pos += 1;
                 }
                 b'\n' => {
@@ -271,7 +276,7 @@ impl<'a> Scanner<'a> {
                     ));
                 }
                 _ => {
-                    buf.push(b as char);
+                    buf.push(b);
                     self.pos += 1;
                 }
             }
@@ -422,5 +427,11 @@ mod tests {
     #[test]
     fn unknown_escape_is_error() {
         assert!(tokenize(r#""\q""#).is_err());
+    }
+
+    #[test]
+    fn utf8_string_literal() {
+        let ks = kinds(r#""café 日本""#);
+        assert_eq!(ks, vec![TokenKind::Str("café 日本".into()), TokenKind::Eof]);
     }
 }
