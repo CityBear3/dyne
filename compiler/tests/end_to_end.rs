@@ -1,6 +1,6 @@
 //! End-to-end compilation smoke tests.
 
-use calculator::{
+use dyne::{
     ast::{BinOp, ExprKind, Item, StmtKind},
     compile,
 };
