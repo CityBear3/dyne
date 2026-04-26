@@ -318,6 +318,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn float_literals() {
         let ks = kinds("3.14 0.0 1.5e-10");
         assert_eq!(ks.len(), 4);
