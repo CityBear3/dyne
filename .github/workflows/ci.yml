@@ -16,10 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Set up Rust toolchain
-        run: |
-          rustup update stable
-          rustup default stable
-          rustup component add clippy rustfmt
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: compiler
