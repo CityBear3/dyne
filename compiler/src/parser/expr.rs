@@ -972,4 +972,12 @@ mod tests {
         let err = super::parse_pattern(&mut p).unwrap_err();
         assert!(err.message.contains("floating-point"));
     }
+
+    #[test]
+    fn pattern_minus_followed_by_non_int_rejected() {
+        let toks = tokenize("-x").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("expected integer literal after '-'"));
+    }
 }
