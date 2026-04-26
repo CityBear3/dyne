@@ -1,6 +1,6 @@
 //! Expression parser.
 
-use crate::ast::{Expr, ExprKind};
+use crate::ast::{BinOp, Expr, ExprKind, UnaryOp};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
@@ -104,9 +104,68 @@ fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
     Ok(row)
 }
 
-// Placeholder Pratt parser — binding powers added in Task 17.
-fn parse_bp(p: &mut Parser, _min_bp: u8) -> Result<Expr, CompileError> {
-    parse_primary(p)
+fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, CompileError> {
+    let mut lhs = parse_unary(p)?;
+
+    while let Some((op, lbp, rbp)) = infix_op(p.peek_kind()) {
+        if lbp < min_bp {
+            break;
+        }
+        p.advance();
+        let rhs = parse_bp(p, rbp)?;
+        let span = Span::merge(lhs.span, rhs.span);
+        lhs = Expr {
+            kind: ExprKind::BinOp(op, Box::new(lhs), Box::new(rhs)),
+            span,
+        };
+    }
+
+    Ok(lhs)
+}
+
+fn parse_unary(p: &mut Parser) -> Result<Expr, CompileError> {
+    let tok = p.peek().clone();
+    match tok.kind {
+        TokenKind::Minus => {
+            p.advance();
+            let rhs = parse_unary(p)?;
+            let span = Span::merge(tok.span, rhs.span);
+            Ok(Expr {
+                kind: ExprKind::UnaryOp(UnaryOp::Neg, Box::new(rhs)),
+                span,
+            })
+        }
+        TokenKind::Not => {
+            p.advance();
+            let rhs = parse_unary(p)?;
+            let span = Span::merge(tok.span, rhs.span);
+            Ok(Expr {
+                kind: ExprKind::UnaryOp(UnaryOp::Not, Box::new(rhs)),
+                span,
+            })
+        }
+        _ => parse_primary(p),
+    }
+}
+
+/// Returns (op, left bp, right bp). Right bp > left bp => right-associative.
+fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
+    Some(match kind {
+        TokenKind::Or => (BinOp::Or, 1, 2),
+        TokenKind::And => (BinOp::And, 3, 4),
+        TokenKind::EqEq => (BinOp::Eq, 5, 6),
+        TokenKind::Neq => (BinOp::Neq, 5, 6),
+        TokenKind::Lt => (BinOp::Lt, 5, 6),
+        TokenKind::Gt => (BinOp::Gt, 5, 6),
+        TokenKind::Le => (BinOp::Le, 5, 6),
+        TokenKind::Ge => (BinOp::Ge, 5, 6),
+        TokenKind::Plus => (BinOp::Add, 7, 8),
+        TokenKind::Minus => (BinOp::Sub, 7, 8),
+        TokenKind::Star => (BinOp::Mul, 9, 10),
+        TokenKind::Slash => (BinOp::Div, 9, 10),
+        TokenKind::Caret => (BinOp::Pow, 12, 11), // right-associative
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -170,6 +229,78 @@ mod tests {
                 assert_eq!(m[0].len(), 2);
             }
             _ => panic!("expected MatLit"),
+        }
+    }
+
+    #[test]
+    fn addition() {
+        let e = parse("1 + 2");
+        match e.kind {
+            ExprKind::BinOp(BinOp::Add, _, _) => {}
+            _ => panic!("expected Add"),
+        }
+    }
+
+    #[test]
+    fn precedence_mul_over_add() {
+        // 1 + 2 * 3 => Add(1, Mul(2, 3))
+        let e = parse("1 + 2 * 3");
+        match e.kind {
+            ExprKind::BinOp(BinOp::Add, lhs, rhs) => {
+                assert_eq!(lhs.kind, ExprKind::IntLit(1));
+                match rhs.kind {
+                    ExprKind::BinOp(BinOp::Mul, _, _) => {}
+                    _ => panic!("expected Mul on right"),
+                }
+            }
+            _ => panic!("expected Add at root"),
+        }
+    }
+
+    #[test]
+    fn pow_right_associative() {
+        // 2 ^ 3 ^ 2 => Pow(2, Pow(3, 2))
+        let e = parse("2 ^ 3 ^ 2");
+        match e.kind {
+            ExprKind::BinOp(BinOp::Pow, lhs, rhs) => {
+                assert_eq!(lhs.kind, ExprKind::IntLit(2));
+                match rhs.kind {
+                    ExprKind::BinOp(BinOp::Pow, _, _) => {}
+                    _ => panic!("expected nested Pow on right"),
+                }
+            }
+            _ => panic!("expected Pow at root"),
+        }
+    }
+
+    #[test]
+    fn unary_neg() {
+        let e = parse("-x");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Neg, _) => {}
+            _ => panic!("expected Neg"),
+        }
+    }
+
+    #[test]
+    fn unary_not() {
+        let e = parse("not true");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Not, _) => {}
+            _ => panic!("expected Not"),
+        }
+    }
+
+    #[test]
+    fn logical_precedence() {
+        // a and b or c => Or(And(a, b), c)
+        let e = parse("a and b or c");
+        match e.kind {
+            ExprKind::BinOp(BinOp::Or, lhs, _) => match lhs.kind {
+                ExprKind::BinOp(BinOp::And, _, _) => {}
+                _ => panic!("expected And inside Or"),
+            },
+            _ => panic!("expected Or at root"),
         }
     }
 }
