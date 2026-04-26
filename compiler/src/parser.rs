@@ -19,7 +19,6 @@ pub(crate) struct Parser<'t> {
     pos: usize,
 }
 
-#[allow(dead_code)]
 impl<'t> Parser<'t> {
     pub fn new(tokens: &'t [Token]) -> Self {
         Self { tokens, pos: 0 }
