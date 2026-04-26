@@ -181,11 +181,18 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
         match p.peek_kind() {
             TokenKind::LParen => {
                 p.advance();
+                p.consume_newlines();
                 let mut args = Vec::new();
                 if !p.at(&TokenKind::RParen) {
                     args.push(parse_expr(p)?);
+                    p.consume_newlines();
                     while p.eat(&TokenKind::Comma) {
+                        p.consume_newlines();
+                        if p.at(&TokenKind::RParen) {
+                            break; // trailing comma
+                        }
                         args.push(parse_expr(p)?);
+                        p.consume_newlines();
                     }
                 }
                 let end = p.peek().span;
@@ -616,6 +623,34 @@ mod tests {
                 assert_eq!(args.len(), 2);
             }
             _ => panic!("expected Call"),
+        }
+    }
+
+    #[test]
+    fn function_call_multi_line_args() {
+        // Newlines inside call arguments `(...)` should be ignored.
+        let e = parse("f(\n  1,\n  2,\n  3\n)");
+        match e.kind {
+            ExprKind::Call(_, args) => assert_eq!(args.len(), 3),
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_call_trailing_comma() {
+        let e = parse("f(1, 2,)");
+        match e.kind {
+            ExprKind::Call(_, args) => assert_eq!(args.len(), 2),
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_call_multi_line_with_trailing_comma() {
+        let e = parse("f(\n  1,\n  2,\n)");
+        match e.kind {
+            ExprKind::Call(_, args) => assert_eq!(args.len(), 2),
+            other => panic!("expected Call, got {other:?}"),
         }
     }
 

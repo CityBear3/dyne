@@ -1,8 +1,13 @@
 // 1D harmonic oscillator: H(q, p) = p^2 / (2m) + (1/2) k q^2.
-// Demonstrates unit-annotated function signatures and the precedence rule
-// `-x^2 == -(x^2)` that the parser enforces.
+// Demonstrates unit-annotated function signatures (multi-line + trailing comma)
+// and the precedence rule `-x^2 == -(x^2)` that the parser enforces.
 
-function hamiltonian(q: Scalar<m>, p: Scalar<kg*m/s>, m: Scalar<kg>, k: Scalar<kg/s^2>): Scalar<kg*m^2/s^2>
+function hamiltonian(
+  q: Scalar<m>,
+  p: Scalar<kg*m/s>,
+  m: Scalar<kg>,
+  k: Scalar<kg/s^2>,
+): Scalar<kg*m^2/s^2>
   return p^2 / (2.0 * m) + 0.5 * k * q^2
 end
 
