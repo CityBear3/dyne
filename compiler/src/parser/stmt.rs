@@ -660,4 +660,12 @@ mod tests {
             panic!("expected Struct item");
         }
     }
+
+    #[test]
+    fn struct_def_field_without_newline_rejected() {
+        let toks = tokenize("struct Bad\n  x: Scalar y: Scalar\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected newline after struct field"));
+    }
 }
