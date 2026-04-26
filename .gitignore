@@ -6,3 +6,6 @@
 
 # Claude Code: worktrees
 .claude/worktrees/
+
+# Implementation plans (kept local, not published)
+/docs/plans/
