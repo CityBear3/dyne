@@ -395,11 +395,11 @@ Provides basic file operations: opening, reading, writing, and closing files. Fi
 ```
 let file: Result<File, Error> = open("output.csv", "w")
 match file
-    Ok(f) then
+    case Ok(f) then
         write(f, "t,energy\n")
         write(f, printf("%f,%f\n", t, energy))
         close(f)
-    Err(e) then
+    case Err(e) then
         printf("Failed to open file: %s\n", e)
 end
 ```
