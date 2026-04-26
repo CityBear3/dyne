@@ -38,14 +38,67 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
                 unreachable!()
             }
         }
+        TokenKind::Struct => Ok(Item::Struct(parse_struct_def(p)?)),
         _ => Err(CompileError::parse(
             p.current_span(),
             format!(
-                "expected top-level item (function or let), found {:?}",
+                "expected top-level item (function, let, or struct), found {:?}",
                 p.peek_kind()
             ),
         )),
     }
+}
+
+fn parse_struct_def(p: &mut Parser) -> Result<crate::ast::StructDef, CompileError> {
+    use crate::ast::{StructDef, StructField};
+    let start = p.current_span();
+    p.expect(&TokenKind::Struct, "'struct'")?;
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => return Err(CompileError::parse(name_tok.span, "expected struct name")),
+    };
+    p.advance();
+    p.consume_newlines();
+    let mut fields = Vec::new();
+    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Eof) {
+        let field_start = p.current_span();
+        let fname_tok = p.peek().clone();
+        let fname = match &fname_tok.kind {
+            TokenKind::Ident(n) => n.clone(),
+            _ => return Err(CompileError::parse(fname_tok.span, "expected field name")),
+        };
+        p.advance();
+        p.expect(&TokenKind::Colon, "':'")?;
+        let ty = crate::parser::types::parse_type(p)?;
+        let span = Span::merge(field_start, ty.span);
+        fields.push(StructField {
+            name: fname,
+            ty,
+            span,
+        });
+        p.eat(&TokenKind::Comma);
+        if !matches!(
+            p.peek_kind(),
+            TokenKind::Newline | TokenKind::End | TokenKind::Eof
+        ) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after struct field, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
+        p.consume_newlines();
+    }
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(StructDef {
+        name,
+        fields,
+        span: Span::merge(start, end),
+    })
 }
 
 pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
@@ -559,5 +612,52 @@ mod tests {
     fn newline_after_each_top_level_item_works() {
         let p = parse_prog("let x: Int = 1\nlet y: Int = 2\n");
         assert_eq!(p.items.len(), 2);
+    }
+
+    #[test]
+    fn struct_def_simple() {
+        let p = parse_prog("struct Point\n  x: Scalar\n  y: Scalar\nend");
+        assert_eq!(p.items.len(), 1);
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.name, "Point");
+            assert_eq!(s.fields.len(), 2);
+            assert_eq!(s.fields[0].name, "x");
+            assert_eq!(s.fields[1].name, "y");
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_empty() {
+        let p = parse_prog("struct Marker\nend");
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.name, "Marker");
+            assert!(s.fields.is_empty());
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_unit_annotated_fields() {
+        let src = "struct State\n  q: Vec<3>\n  p: Vec<3>\n  t: Scalar\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.fields.len(), 3);
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_trailing_comma_per_field() {
+        let src = "struct Pair\n  a: Scalar,\n  b: Scalar,\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.fields.len(), 2);
+        } else {
+            panic!("expected Struct item");
+        }
     }
 }
