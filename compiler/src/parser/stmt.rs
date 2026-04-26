@@ -1,6 +1,6 @@
 //! Statement and top-level item parser.
 
-use crate::ast::{Block, LetStmt, Program, Stmt, StmtKind};
+use crate::ast::{Block, ForStmt, LetStmt, Program, Stmt, StmtKind, WhileStmt};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
@@ -38,6 +38,8 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     match p.peek_kind() {
         TokenKind::Let => parse_let_stmt(p),
         TokenKind::Return => parse_return_stmt(p),
+        TokenKind::While => parse_while_stmt(p),
+        TokenKind::For => parse_for_stmt(p),
         TokenKind::Ident(_) if matches!(p.peek_ahead(1), TokenKind::Eq) => {
             parse_assign_stmt(p)
         }
@@ -111,6 +113,102 @@ fn parse_expr_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     Ok(Stmt {
         kind: StmtKind::Expr(expr),
         span,
+    })
+}
+
+fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+    let start = p.current_span();
+    p.expect(&TokenKind::While, "'while'")?;
+    let cond = parse_expr(p)?;
+    p.expect(&TokenKind::Do, "'do'")?;
+    let body = parse_block_until(p, &[TokenKindKind::End])?;
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(Stmt {
+        kind: StmtKind::While(WhileStmt { cond, body }),
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+    let start = p.current_span();
+    p.expect(&TokenKind::For, "'for'")?;
+    let name_tok = p.peek().clone();
+    let first = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => {
+            return Err(CompileError::parse(
+                name_tok.span,
+                "expected identifier after 'for'",
+            ));
+        }
+    };
+    p.advance();
+
+    // Form: `for i = a, b do ... end`
+    if p.eat(&TokenKind::Eq) {
+        let from = parse_expr(p)?;
+        p.expect(&TokenKind::Comma, "','")?;
+        let to = parse_expr(p)?;
+        p.expect(&TokenKind::Do, "'do'")?;
+        let body = parse_block_until(p, &[TokenKindKind::End])?;
+        let end = p.current_span();
+        p.expect(&TokenKind::End, "'end'")?;
+        return Ok(Stmt {
+            kind: StmtKind::For(ForStmt::Range {
+                var: first,
+                start: from,
+                end: to,
+                body,
+            }),
+            span: Span::merge(start, end),
+        });
+    }
+
+    // Form: `for k, v in e do ... end`
+    if p.eat(&TokenKind::Comma) {
+        let second_tok = p.peek().clone();
+        let second = match &second_tok.kind {
+            TokenKind::Ident(n) => n.clone(),
+            _ => {
+                return Err(CompileError::parse(
+                    second_tok.span,
+                    "expected identifier after ','",
+                ));
+            }
+        };
+        p.advance();
+        p.expect(&TokenKind::In, "'in'")?;
+        let iter = parse_expr(p)?;
+        p.expect(&TokenKind::Do, "'do'")?;
+        let body = parse_block_until(p, &[TokenKindKind::End])?;
+        let end = p.current_span();
+        p.expect(&TokenKind::End, "'end'")?;
+        return Ok(Stmt {
+            kind: StmtKind::For(ForStmt::IterKV {
+                key: first,
+                value: second,
+                iter,
+                body,
+            }),
+            span: Span::merge(start, end),
+        });
+    }
+
+    // Form: `for x in e do ... end`
+    p.expect(&TokenKind::In, "'in'")?;
+    let iter = parse_expr(p)?;
+    p.expect(&TokenKind::Do, "'do'")?;
+    let body = parse_block_until(p, &[TokenKindKind::End])?;
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(Stmt {
+        kind: StmtKind::For(ForStmt::Iter {
+            var: first,
+            iter,
+            body,
+        }),
+        span: Span::merge(start, end),
     })
 }
 
@@ -230,6 +328,42 @@ mod tests {
         match s.kind {
             StmtKind::Return(None) => {}
             _ => panic!("expected Return(None)"),
+        }
+    }
+
+    #[test]
+    fn while_loop() {
+        let s = parse_one("while x > 0 do\n  x = x - 1\nend");
+        assert!(matches!(s.kind, StmtKind::While(_)));
+    }
+
+    #[test]
+    fn for_range() {
+        let s = parse_one("for i = 0, 3 do\n  x = i\nend");
+        match s.kind {
+            StmtKind::For(crate::ast::ForStmt::Range { var, .. }) => assert_eq!(var, "i"),
+            _ => panic!("expected For::Range"),
+        }
+    }
+
+    #[test]
+    fn for_iter() {
+        let s = parse_one("for x in arr do\n  y = x\nend");
+        match s.kind {
+            StmtKind::For(crate::ast::ForStmt::Iter { var, .. }) => assert_eq!(var, "x"),
+            _ => panic!("expected For::Iter"),
+        }
+    }
+
+    #[test]
+    fn for_iter_kv() {
+        let s = parse_one("for k, v in params do\n  x = v\nend");
+        match s.kind {
+            StmtKind::For(crate::ast::ForStmt::IterKV { key, value, .. }) => {
+                assert_eq!(key, "k");
+                assert_eq!(value, "v");
+            }
+            _ => panic!("expected For::IterKV"),
         }
     }
 }
