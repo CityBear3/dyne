@@ -17,6 +17,7 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
     while !matches!(p.peek_kind(), TokenKind::Eof) {
         let item = parse_item(p)?;
         items.push(item);
+        require_stmt_terminator(p, &[])?;
         p.consume_newlines();
     }
     let end = p.current_span();
@@ -297,6 +298,7 @@ pub(crate) fn parse_block_until(
         }
         let stmt = parse_stmt(p)?;
         stmts.push(stmt);
+        require_stmt_terminator(p, terminators)?;
         p.consume_newlines();
     }
     let end = p.current_span();
@@ -304,6 +306,24 @@ pub(crate) fn parse_block_until(
         stmts,
         span: Span::merge(start, end),
     })
+}
+
+/// Require a statement boundary: Newline / Eof / a block terminator.
+/// Per Design Doc §6.6, statements must end with one of these.
+fn require_stmt_terminator(
+    p: &Parser,
+    terminators: &[TokenKindKind],
+) -> Result<(), CompileError> {
+    if matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof)
+        || is_at_terminator(p, terminators)
+    {
+        return Ok(());
+    }
+    let tok = p.peek();
+    Err(CompileError::parse(
+        tok.span,
+        format!("expected newline after statement, found {:?}", tok.kind),
+    ))
 }
 
 /// Discriminator enum for block terminators, to avoid needing full TokenKind equality.
@@ -469,5 +489,43 @@ mod tests {
     fn empty_program() {
         let p = parse_prog("");
         assert_eq!(p.items.len(), 0);
+    }
+
+    fn parse_prog_err(source: &str) -> CompileError {
+        let toks = tokenize(source).unwrap();
+        let mut p = Parser::new(&toks);
+        parse_program(&mut p).unwrap_err()
+    }
+
+    #[test]
+    fn top_level_items_require_newline_separator() {
+        // Per Design Doc §6.6: a Newline / Eof / terminator must follow each statement.
+        // Two items without a separating Newline must fail.
+        let err = parse_prog_err("let x: Int = 1 let y: Int = 2");
+        assert!(err.message.contains("newline"));
+    }
+
+    #[test]
+    fn block_stmts_require_newline_separator() {
+        // Same rule inside a block.
+        let src = "function f(): Int\n  let a: Int = 1 let b: Int = 2\nend";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("newline"));
+    }
+
+    #[test]
+    fn one_line_if_as_function_body_still_works() {
+        // 1-line if/while/for must still parse: block-open Newline remains optional.
+        let src = "function abs1(x: Int): Int\n  if x < 0 then return -1 end\nend";
+        let p = parse_prog(src);
+        assert_eq!(p.items.len(), 1);
+    }
+
+    #[test]
+    fn newline_after_each_top_level_item_works() {
+        let p = parse_prog("let x: Int = 1\nlet y: Int = 2\n");
+        assert_eq!(p.items.len(), 2);
     }
 }
