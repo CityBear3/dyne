@@ -72,3 +72,39 @@ fn units_in_type_annotation() {
     let p = compile(src).unwrap();
     assert_eq!(p.items.len(), 1);
 }
+
+#[test]
+fn stage2_struct_definition_compiles() {
+    let src = "struct State\n  q: Vec<3>\n  p: Vec<3>\n  t: Scalar\nend";
+    let prog = dyne::compile(src).unwrap();
+    assert_eq!(prog.items.len(), 1);
+}
+
+#[test]
+fn stage2_enum_with_generic_compiles() {
+    let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend";
+    let prog = dyne::compile(src).unwrap();
+    assert_eq!(prog.items.len(), 1);
+}
+
+#[test]
+fn stage2_struct_literal_in_let_compiles() {
+    let src =
+        "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Point { x: 1.0, y: 2.0 }";
+    let prog = dyne::compile(src).unwrap();
+    assert_eq!(prog.items.len(), 2);
+}
+
+#[test]
+fn stage2_match_with_literal_payload_compiles() {
+    let src = "function classify(n: Option<Int>): Int\n  return match n\n    case Some(0) then 0\n    case Some(_) then 1\n    case None then -1\n  end\nend";
+    let prog = dyne::compile(src).unwrap();
+    assert_eq!(prog.items.len(), 1);
+}
+
+#[test]
+fn stage2_float_pattern_rejected_e2e() {
+    let src = "function f(x: Scalar): Int\n  return match x\n    case 0.5 then 1\n    case _ then 0\n  end\nend";
+    let err = dyne::compile(src).unwrap_err();
+    assert!(err.message.contains("floating-point"));
+}
