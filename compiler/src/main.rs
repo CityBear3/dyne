@@ -18,8 +18,8 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let source = SourceFile::new(text.clone());
-    match compile(&text) {
+    let source = SourceFile::new(text);
+    match compile(source.text()) {
         Ok(program) => {
             println!("parsed {} item(s)", program.items.len());
             ExitCode::SUCCESS
