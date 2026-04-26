@@ -233,10 +233,51 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
                     span,
                 };
             }
+            TokenKind::LBrace => {
+                let name = if let ExprKind::Ident(n) = &expr.kind {
+                    n.clone()
+                } else {
+                    break;
+                };
+                p.advance();
+                p.consume_newlines();
+                let mut fields = Vec::new();
+                if !p.at(&TokenKind::RBrace) {
+                    fields.push(parse_struct_lit_field(p)?);
+                    p.consume_newlines();
+                    while p.eat(&TokenKind::Comma) {
+                        p.consume_newlines();
+                        if p.at(&TokenKind::RBrace) {
+                            break;
+                        }
+                        fields.push(parse_struct_lit_field(p)?);
+                        p.consume_newlines();
+                    }
+                }
+                let end = p.current_span();
+                p.expect(&TokenKind::RBrace, "'}'")?;
+                let span = Span::merge(expr.span, end);
+                expr = Expr {
+                    kind: ExprKind::StructLit(name, fields),
+                    span,
+                };
+            }
             _ => break,
         }
     }
     Ok(expr)
+}
+
+fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError> {
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => return Err(CompileError::parse(name_tok.span, "expected field name")),
+    };
+    p.advance();
+    p.expect(&TokenKind::Colon, "':'")?;
+    let value = parse_expr(p)?;
+    Ok((name, value))
 }
 
 fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
@@ -831,6 +872,49 @@ mod tests {
         } else {
             panic!("expected If");
         }
+    }
+
+    #[test]
+    fn struct_lit_simple() {
+        let e = parse("Point { x: 1.0, y: 2.0 }");
+        match e.kind {
+            ExprKind::StructLit(name, fields) => {
+                assert_eq!(name, "Point");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "x");
+                assert_eq!(fields[1].0, "y");
+            }
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_lit_empty() {
+        let e = parse("Marker {}");
+        match e.kind {
+            ExprKind::StructLit(name, fields) => {
+                assert_eq!(name, "Marker");
+                assert!(fields.is_empty());
+            }
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_lit_multi_line() {
+        let e = parse("State {\n  q: [1.0, 0.0, 0.0],\n  p: [0.0, 1.0, 0.0],\n  t: 0.0,\n}");
+        match e.kind {
+            ExprKind::StructLit(_, fields) => assert_eq!(fields.len(), 3),
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_lit_used_in_let() {
+        let toks = tokenize("let s: State = State { q: 1.0, p: 0.0 }").unwrap();
+        let mut parser = Parser::new(&toks);
+        let prog = crate::parser::stmt::parse_program(&mut parser).unwrap();
+        assert_eq!(prog.items.len(), 1);
     }
 
     fn parse_pat(source: &str) -> crate::ast::Pattern {
