@@ -64,6 +64,35 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     }
 }
 
+pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, CompileError> {
+    if !p.eat(&TokenKind::Lt) {
+        return Ok(Vec::new());
+    }
+    let mut params = Vec::new();
+    if !p.at(&TokenKind::Gt) {
+        params.push(parse_type_param_name(p)?);
+        while p.eat(&TokenKind::Comma) {
+            params.push(parse_type_param_name(p)?);
+        }
+    }
+    p.expect(&TokenKind::Gt, "'>'")?;
+    Ok(params)
+}
+
+fn parse_type_param_name(p: &mut Parser) -> Result<String, CompileError> {
+    let tok = p.peek().clone();
+    match &tok.kind {
+        TokenKind::Ident(n) => {
+            p.advance();
+            Ok(n.clone())
+        }
+        _ => Err(CompileError::parse(
+            tok.span,
+            "expected type parameter name",
+        )),
+    }
+}
+
 fn parse_type_arg(p: &mut Parser) -> Result<TypeArg, CompileError> {
     // Int literal
     if let TokenKind::Int(n) = p.peek_kind() {
