@@ -328,6 +328,8 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
 
 use crate::ast::{Pattern, PatternKind};
 
+const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are not supported because NaN \u{2260} NaN and rounding error makes equality matches unreliable; use a guard such as `if abs(x - 0.5) < eps` instead";
+
 // Transient: parse_pattern is only consumed by tests until Task 8 wires it
 // into parse_match_expr. Removed in Task 8.
 #[allow(dead_code)]
@@ -372,6 +374,61 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
                     span: tok.span,
                 })
             }
+        }
+        TokenKind::Int(n) => {
+            let v = *n;
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::IntLit(v),
+                span: tok.span,
+            })
+        }
+        TokenKind::Minus => {
+            p.advance();
+            let next = p.peek().clone();
+            match next.kind {
+                TokenKind::Int(n) => {
+                    p.advance();
+                    Ok(Pattern {
+                        kind: PatternKind::IntLit(-n),
+                        span: Span::merge(tok.span, next.span),
+                    })
+                }
+                TokenKind::Float(_) => Err(CompileError::parse(
+                    Span::merge(tok.span, next.span),
+                    FLOAT_PATTERN_REJECTED,
+                )),
+                _ => Err(CompileError::parse(
+                    next.span,
+                    format!(
+                        "expected integer literal after '-' in pattern, found {:?}",
+                        next.kind
+                    ),
+                )),
+            }
+        }
+        TokenKind::Float(_) => Err(CompileError::parse(tok.span, FLOAT_PATTERN_REJECTED)),
+        TokenKind::True => {
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::BoolLit(true),
+                span: tok.span,
+            })
+        }
+        TokenKind::False => {
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::BoolLit(false),
+                span: tok.span,
+            })
+        }
+        TokenKind::Str(s) => {
+            let s = s.clone();
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::StrLit(s),
+                span: tok.span,
+            })
         }
         _ => Err(CompileError::parse(
             tok.span,
@@ -856,5 +913,63 @@ mod tests {
             crate::ast::PatternKind::Variant(_, payload) => assert_eq!(payload.len(), 2),
             other => panic!("expected Variant, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pattern_int_literal() {
+        let p = parse_pat("42");
+        assert_eq!(p.kind, crate::ast::PatternKind::IntLit(42));
+    }
+
+    #[test]
+    fn pattern_int_literal_negative() {
+        let p = parse_pat("-1");
+        assert_eq!(p.kind, crate::ast::PatternKind::IntLit(-1));
+    }
+
+    #[test]
+    fn pattern_bool_literal_true() {
+        let p = parse_pat("true");
+        assert_eq!(p.kind, crate::ast::PatternKind::BoolLit(true));
+    }
+
+    #[test]
+    fn pattern_bool_literal_false() {
+        let p = parse_pat("false");
+        assert_eq!(p.kind, crate::ast::PatternKind::BoolLit(false));
+    }
+
+    #[test]
+    fn pattern_string_literal() {
+        let p = parse_pat(r#""hello""#);
+        assert_eq!(p.kind, crate::ast::PatternKind::StrLit("hello".into()));
+    }
+
+    #[test]
+    fn pattern_variant_with_int_literal_payload() {
+        let p = parse_pat("Some(0)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Some");
+                assert_eq!(payload[0].kind, crate::ast::PatternKind::IntLit(0));
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_float_literal_rejected() {
+        let toks = tokenize("3.14").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("floating-point"));
+    }
+
+    #[test]
+    fn pattern_negative_float_rejected() {
+        let toks = tokenize("-3.14").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("floating-point"));
     }
 }
