@@ -207,7 +207,7 @@ fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
 }
 
 fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, CompileError> {
-    let mut lhs = parse_unary(p)?;
+    let mut lhs = parse_prefix(p)?;
 
     while let Some((op, lbp, rbp)) = infix_op(p.peek_kind()) {
         if lbp < min_bp {
@@ -225,24 +225,27 @@ fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, CompileError> {
     Ok(lhs)
 }
 
-fn parse_unary(p: &mut Parser) -> Result<Expr, CompileError> {
-    let tok = p.peek().clone();
-    match tok.kind {
-        TokenKind::Minus => {
+/// Prefix operators (`not`, unary `-`) per Design Doc §6.6 precedence table.
+/// `not` (precedence 3) consumes comparison and above (rbp = 4).
+/// Unary `-` (precedence 7) consumes `^` but stops at `*` `/` (rbp = `^` lbp = 12).
+fn parse_prefix(p: &mut Parser) -> Result<Expr, CompileError> {
+    let start = p.current_span();
+    match p.peek_kind() {
+        TokenKind::Not => {
             p.advance();
-            let rhs = parse_unary(p)?;
-            let span = Span::merge(tok.span, rhs.span);
+            let rhs = parse_bp(p, 4)?;
+            let span = Span::merge(start, rhs.span);
             Ok(Expr {
-                kind: ExprKind::UnaryOp(UnaryOp::Neg, Box::new(rhs)),
+                kind: ExprKind::UnaryOp(UnaryOp::Not, Box::new(rhs)),
                 span,
             })
         }
-        TokenKind::Not => {
+        TokenKind::Minus => {
             p.advance();
-            let rhs = parse_unary(p)?;
-            let span = Span::merge(tok.span, rhs.span);
+            let rhs = parse_bp(p, 12)?;
+            let span = Span::merge(start, rhs.span);
             Ok(Expr {
-                kind: ExprKind::UnaryOp(UnaryOp::Not, Box::new(rhs)),
+                kind: ExprKind::UnaryOp(UnaryOp::Neg, Box::new(rhs)),
                 span,
             })
         }
@@ -385,11 +388,108 @@ mod tests {
     }
 
     #[test]
+    fn neg_binds_below_pow() {
+        // Per Design Doc §6.6, unary `-` (precedence 7) is below `^` (8).
+        // `-x^2` must parse as Neg(Pow(x, 2)) — Python/Fortran convention.
+        // Critical for physics DSL: e^(-x^2) (Gaussian) must mean exp(-(x^2)).
+        let e = parse("-x^2");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Neg, inner) => {
+                assert!(matches!(inner.kind, ExprKind::BinOp(BinOp::Pow, _, _)));
+            }
+            _ => panic!("expected Neg(Pow), got {:?}", e.kind),
+        }
+    }
+
+    #[test]
+    fn neg_with_pow_chain() {
+        // `-2^3^4` must parse as Neg(Pow(2, Pow(3, 4))) since ^ is right-assoc
+        // and unary - sits below ^ in precedence.
+        let e = parse("-2^3^4");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Neg, inner) => match inner.kind {
+                ExprKind::BinOp(BinOp::Pow, lhs, rhs) => {
+                    assert_eq!(lhs.kind, ExprKind::IntLit(2));
+                    assert!(matches!(rhs.kind, ExprKind::BinOp(BinOp::Pow, _, _)));
+                }
+                _ => panic!("expected outer Pow inside Neg"),
+            },
+            _ => panic!("expected Neg(Pow), got {:?}", e.kind),
+        }
+    }
+
+    #[test]
+    fn neg_binds_above_mul() {
+        // `-x * y` must parse as Mul(Neg(x), y), not Neg(Mul(x, y)).
+        // Unary - (7) is above * (6).
+        let e = parse("-x * y");
+        match e.kind {
+            ExprKind::BinOp(BinOp::Mul, lhs, _) => {
+                assert!(matches!(lhs.kind, ExprKind::UnaryOp(UnaryOp::Neg, _)));
+            }
+            _ => panic!("expected Mul at root, got {:?}", e.kind),
+        }
+    }
+
+    #[test]
+    fn neg_call_remains_postfix() {
+        // `-f(x)` parses as Neg(Call(f, x)) — call/index/field bind tighter than unary -.
+        let e = parse("-f(x)");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Neg, inner) => {
+                assert!(matches!(inner.kind, ExprKind::Call(_, _)));
+            }
+            _ => panic!("expected Neg(Call), got {:?}", e.kind),
+        }
+    }
+
+    #[test]
     fn unary_not() {
         let e = parse("not true");
         match e.kind {
             ExprKind::UnaryOp(UnaryOp::Not, _) => {}
             _ => panic!("expected Not"),
+        }
+    }
+
+    #[test]
+    fn not_binds_below_comparison() {
+        // Per Design Doc §6.6, `not` has precedence 3 (below comparison 4).
+        // `not 1 == 2` must parse as Not(Eq(1, 2)).
+        let e = parse("not 1 == 2");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Not, inner) => {
+                assert!(matches!(inner.kind, ExprKind::BinOp(BinOp::Eq, _, _)));
+            }
+            _ => panic!("expected Not(Eq), got {:?}", e.kind),
+        }
+    }
+
+    #[test]
+    fn not_binds_below_arithmetic() {
+        // `not 1 + 2` must parse as Not(Add(1, 2)).
+        let e = parse("not 1 + 2");
+        match e.kind {
+            ExprKind::UnaryOp(UnaryOp::Not, inner) => {
+                assert!(matches!(inner.kind, ExprKind::BinOp(BinOp::Add, _, _)));
+            }
+            _ => panic!("expected Not(Add), got {:?}", e.kind),
+        }
+    }
+
+    #[test]
+    fn not_with_logical_and() {
+        // `a or not b and c` should parse as Or(a, And(Not(b), c))
+        // because not (3) > and (2) > or (1).
+        let e = parse("a or not b and c");
+        match e.kind {
+            ExprKind::BinOp(BinOp::Or, _, rhs) => match rhs.kind {
+                ExprKind::BinOp(BinOp::And, lhs2, _) => {
+                    assert!(matches!(lhs2.kind, ExprKind::UnaryOp(UnaryOp::Not, _)));
+                }
+                _ => panic!("expected And on rhs of Or"),
+            },
+            _ => panic!("expected Or at root, got {:?}", e.kind),
         }
     }
 
