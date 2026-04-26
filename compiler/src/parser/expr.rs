@@ -6,7 +6,6 @@ use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::source::Span;
 
-#[allow(dead_code)] // transient until Task 19 wires this into stmt parsing
 pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     parse_bp(p, 0)
 }

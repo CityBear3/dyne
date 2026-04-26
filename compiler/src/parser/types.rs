@@ -6,7 +6,6 @@ use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::source::Span;
 
-#[allow(dead_code)] // transient until Task 19 wires this into stmt parsing
 pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     let start = p.current_span();
 
@@ -65,7 +64,6 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     }
 }
 
-#[allow(dead_code)] // transient until Task 19 wires parse_type into stmt parsing
 fn parse_type_arg(p: &mut Parser) -> Result<TypeArg, CompileError> {
     // Int literal
     if let TokenKind::Int(n) = p.peek_kind() {
@@ -97,7 +95,6 @@ fn parse_type_arg(p: &mut Parser) -> Result<TypeArg, CompileError> {
     Ok(TypeArg::Type(t))
 }
 
-#[allow(dead_code)] // transient until Task 19 wires parse_type into stmt parsing
 fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, CompileError> {
     let mut lhs = parse_unit_factor(p)?;
     loop {
@@ -122,7 +119,6 @@ fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, CompileError> {
     Ok(lhs)
 }
 
-#[allow(dead_code)] // transient until Task 19 wires parse_type into stmt parsing
 fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, CompileError> {
     let tok = p.peek().clone();
     let atom = match &tok.kind {
