@@ -115,7 +115,6 @@ fn parse_expr_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 }
 
 /// Parse a block that ends at any of: End, Else, Elseif.
-#[allow(dead_code)] // transient until Tasks 20-21 wire this into if/while/for
 pub(crate) fn parse_block_until(
     p: &mut Parser,
     terminators: &[TokenKindKind],
@@ -142,7 +141,6 @@ pub(crate) fn parse_block_until(
 }
 
 /// Discriminator enum for block terminators, to avoid needing full TokenKind equality.
-#[allow(dead_code)] // transient until Tasks 20-21 wire this into if/while/for
 #[derive(Clone, Copy)]
 pub(crate) enum TokenKindKind {
     End,
@@ -150,7 +148,6 @@ pub(crate) enum TokenKindKind {
     Elseif,
 }
 
-#[allow(dead_code)] // transient until Tasks 20-21 wire this into if/while/for
 fn is_at_terminator(p: &Parser, terminators: &[TokenKindKind]) -> bool {
     for t in terminators {
         let matched = match t {

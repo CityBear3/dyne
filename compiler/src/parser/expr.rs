@@ -50,6 +50,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
             })
         }
         TokenKind::LBracket => parse_vec_or_mat_lit(p),
+        TokenKind::If => parse_if_expr(p),
         _ => Err(CompileError::parse(
             tok.span,
             format!("expected expression, found {:?}", tok.kind),
@@ -86,6 +87,51 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     p.expect(&TokenKind::RBracket, "']'")?;
     Ok(Expr {
         kind: ExprKind::VecLit(elems),
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
+    use crate::ast::IfExpr;
+    use crate::parser::stmt::{TokenKindKind, parse_block_until};
+
+    let start = p.current_span();
+    p.expect(&TokenKind::If, "'if'")?;
+    let cond = parse_expr(p)?;
+    p.expect(&TokenKind::Then, "'then'")?;
+    let then_block = parse_block_until(
+        p,
+        &[TokenKindKind::Elseif, TokenKindKind::Else, TokenKindKind::End],
+    )?;
+
+    let mut elseifs = Vec::new();
+    while matches!(p.peek_kind(), TokenKind::Elseif) {
+        p.advance();
+        let cond_i = parse_expr(p)?;
+        p.expect(&TokenKind::Then, "'then'")?;
+        let block_i = parse_block_until(
+            p,
+            &[TokenKindKind::Elseif, TokenKindKind::Else, TokenKindKind::End],
+        )?;
+        elseifs.push((cond_i, block_i));
+    }
+
+    let else_block = if matches!(p.peek_kind(), TokenKind::Else) {
+        p.advance();
+        Some(parse_block_until(p, &[TokenKindKind::End])?)
+    } else {
+        None
+    };
+
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(Expr {
+        kind: ExprKind::If(IfExpr {
+            cond: Box::new(cond),
+            then_block,
+            elseifs,
+            else_block,
+        }),
         span: Span::merge(start, end),
     })
 }
@@ -409,5 +455,33 @@ mod tests {
             return;
         }
         panic!("chained postfix structure mismatch");
+    }
+
+    #[test]
+    fn if_then_else_end() {
+        let source = "if x > 0 then\n  return 1\nelse\n  return -1\nend";
+        let toks = tokenize(source).unwrap();
+        let mut p = Parser::new(&toks);
+        let e = parse_expr(&mut p).unwrap();
+        match e.kind {
+            ExprKind::If(ie) => {
+                assert!(ie.else_block.is_some());
+                assert_eq!(ie.elseifs.len(), 0);
+            }
+            _ => panic!("expected If"),
+        }
+    }
+
+    #[test]
+    fn if_with_elseif() {
+        let source = "if x > 0 then\n  return 1\nelseif x == 0 then\n  return 0\nelse\n  return -1\nend";
+        let toks = tokenize(source).unwrap();
+        let mut p = Parser::new(&toks);
+        let e = parse_expr(&mut p).unwrap();
+        if let ExprKind::If(ie) = e.kind {
+            assert_eq!(ie.elseifs.len(), 1);
+        } else {
+            panic!("expected If");
+        }
     }
 }
