@@ -370,7 +370,7 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
 
 use crate::ast::{Pattern, PatternKind};
 
-const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are not supported because NaN \u{2260} NaN and rounding error makes equality matches unreliable; use a guard such as `if abs(x - 0.5) < eps` instead";
+const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are rejected: IEEE 754 equality is unreliable (NaN \u{2260} NaN, rounding error). Only Int / Bool / String literal patterns are supported in `case` arms.";
 
 pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
     let start = p.current_span();
