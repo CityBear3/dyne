@@ -121,10 +121,19 @@ mod tests {
     }
 
     #[test]
-    fn pattern_literal_variants_exist() {
-        let _ = PatternKind::IntLit(42);
-        let _ = PatternKind::BoolLit(true);
-        let _ = PatternKind::StrLit("hello".into());
+    fn pattern_literal_variants_distinct_and_typed() {
+        assert_eq!(PatternKind::IntLit(42), PatternKind::IntLit(42));
+        assert_ne!(PatternKind::IntLit(42), PatternKind::IntLit(0));
+        assert_ne!(PatternKind::BoolLit(true), PatternKind::BoolLit(false));
+        assert_ne!(PatternKind::IntLit(1), PatternKind::BoolLit(true));
+        assert_eq!(
+            PatternKind::StrLit("hello".into()),
+            PatternKind::StrLit("hello".into()),
+        );
+        assert_ne!(
+            PatternKind::StrLit("a".into()),
+            PatternKind::StrLit("b".into()),
+        );
     }
 
     #[test]
