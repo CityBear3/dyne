@@ -68,13 +68,16 @@ pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, Compi
     if !p.eat(&TokenKind::Lt) {
         return Ok(Vec::new());
     }
+    if p.at(&TokenKind::Gt) {
+        return Err(CompileError::parse(
+            p.current_span(),
+            "empty type parameter list `<>` is not allowed; omit the brackets entirely",
+        ));
+    }
     let mut params = Vec::new();
-    // Empty `<>` is permitted (Rust-permissive); semantic phase may tighten this if desired.
-    if !p.at(&TokenKind::Gt) {
+    params.push(parse_type_param_name(p)?);
+    while p.eat(&TokenKind::Comma) {
         params.push(parse_type_param_name(p)?);
-        while p.eat(&TokenKind::Comma) {
-            params.push(parse_type_param_name(p)?);
-        }
     }
     p.expect(&TokenKind::Gt, "'>'")?;
     Ok(params)

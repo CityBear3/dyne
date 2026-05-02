@@ -825,4 +825,12 @@ mod tests {
         let err = parse_program(&mut p).unwrap_err();
         assert!(err.message.contains("expected variant name"));
     }
+
+    #[test]
+    fn enum_def_empty_type_params_rejected() {
+        let toks = tokenize("enum Foo<>\n  V\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("empty type parameter list"));
+    }
 }
