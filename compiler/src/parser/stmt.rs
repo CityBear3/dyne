@@ -845,4 +845,28 @@ mod tests {
         let err = parse_program(&mut p).unwrap_err();
         assert!(err.message.contains("empty payload list"));
     }
+
+    #[test]
+    fn struct_def_missing_name_rejected() {
+        let toks = tokenize("struct 1\n  x: Int\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected struct name"));
+    }
+
+    #[test]
+    fn struct_def_field_name_missing_rejected() {
+        let toks = tokenize("struct S\n  1: Int\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected field name"));
+    }
+
+    #[test]
+    fn enum_def_missing_name_rejected() {
+        let toks = tokenize("enum 1\n  V\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected enum name"));
+    }
 }

@@ -1294,6 +1294,25 @@ mod tests {
     }
 
     #[test]
+    fn pattern_unsupported_token_rejected() {
+        let toks = tokenize("+").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("expected pattern"));
+    }
+
+    #[test]
+    fn match_arm_body_two_stmts_on_one_line_rejected() {
+        let toks = tokenize("match x\n  case _ then 1 1\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(
+            err.message
+                .contains("expected newline after match arm statement")
+        );
+    }
+
+    #[test]
     fn pattern_variant_empty_payload_rejected() {
         let toks = tokenize("Foo()").unwrap();
         let mut p = Parser::new(&toks);
