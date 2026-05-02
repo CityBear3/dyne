@@ -78,6 +78,8 @@ The parser is added to `parse_item` as a third top-level form (in addition to `f
 
 Struct definitions do not carry generic parameters in this stage. The spec example `struct State` is monomorphic, and Dyne's stdlib roadmap does not yet require generic structs. If they become necessary later, the AST already has room (via a `Vec<String>` field analogous to `EnumDef::type_params`) and the parser can be extended.
 
+Field declarations are written on a single line (`name: Type`); inline newlines between the name, colon, and type are not permitted. This is consistent with Stage 1's `let` and function-parameter conventions, which also reject newlines internal to a `name: Type` construct. Newlines between fields, and an optional trailing comma per field, are accepted (see §5.1).
+
 ### 4.3 Struct Literal Expression
 
 A struct literal has the form
