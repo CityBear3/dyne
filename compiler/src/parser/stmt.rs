@@ -156,17 +156,21 @@ fn parse_variant_decl(p: &mut Parser) -> Result<crate::ast::EnumVariant, Compile
     let mut end_span = name_span;
     if p.eat(&TokenKind::LParen) {
         p.consume_newlines();
-        if !p.at(&TokenKind::RParen) {
+        if p.at(&TokenKind::RParen) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "empty payload list `()` is not allowed; omit the parentheses for a no-payload variant",
+            ));
+        }
+        payload.push(crate::parser::types::parse_type(p)?);
+        p.consume_newlines();
+        while p.eat(&TokenKind::Comma) {
+            p.consume_newlines();
+            if p.at(&TokenKind::RParen) {
+                break;
+            }
             payload.push(crate::parser::types::parse_type(p)?);
             p.consume_newlines();
-            while p.eat(&TokenKind::Comma) {
-                p.consume_newlines();
-                if p.at(&TokenKind::RParen) {
-                    break;
-                }
-                payload.push(crate::parser::types::parse_type(p)?);
-                p.consume_newlines();
-            }
         }
         // Capture span of `)` BEFORE consuming, so the variant span doesn't
         // overshoot into the following Newline / Comma / `end` / Eof.
@@ -832,5 +836,13 @@ mod tests {
         let mut p = Parser::new(&toks);
         let err = parse_program(&mut p).unwrap_err();
         assert!(err.message.contains("empty type parameter list"));
+    }
+
+    #[test]
+    fn enum_def_empty_payload_rejected() {
+        let toks = tokenize("enum E\n  Foo()\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("empty payload list"));
     }
 }

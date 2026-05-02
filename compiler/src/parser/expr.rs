@@ -388,18 +388,22 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
             p.advance();
             if p.eat(&TokenKind::LParen) {
                 p.consume_newlines();
+                if p.at(&TokenKind::RParen) {
+                    return Err(CompileError::parse(
+                        p.current_span(),
+                        "empty payload list `()` is not allowed; use the variant name without parentheses",
+                    ));
+                }
                 let mut payload = Vec::new();
-                if !p.at(&TokenKind::RParen) {
+                payload.push(parse_pattern(p)?);
+                p.consume_newlines();
+                while p.eat(&TokenKind::Comma) {
+                    p.consume_newlines();
+                    if p.at(&TokenKind::RParen) {
+                        break;
+                    }
                     payload.push(parse_pattern(p)?);
                     p.consume_newlines();
-                    while p.eat(&TokenKind::Comma) {
-                        p.consume_newlines();
-                        if p.at(&TokenKind::RParen) {
-                            break;
-                        }
-                        payload.push(parse_pattern(p)?);
-                        p.consume_newlines();
-                    }
                 }
                 let end = p.current_span();
                 p.expect(&TokenKind::RParen, "')'")?;
@@ -1287,6 +1291,14 @@ mod tests {
             !body_text.contains("case"),
             "arm[0].body.span overshot into next case: {body_text:?}"
         );
+    }
+
+    #[test]
+    fn pattern_variant_empty_payload_rejected() {
+        let toks = tokenize("Foo()").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("empty payload list"));
     }
 
     #[test]
