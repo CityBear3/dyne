@@ -1,0 +1,23 @@
+// Pattern-match an Option value to extract a Scalar with a default.
+// Demonstrates struct definition, enum definition (generic), struct literal,
+// match expression with `case` arms, and a no-payload variant pattern.
+
+struct Measurement
+  value: Scalar
+  uncertainty: Scalar
+end
+
+enum Option<T>
+  Some(T)
+  None
+end
+
+function value_or_default(m: Option<Measurement>, default: Scalar): Scalar
+  return match m
+    case Some(measured) then measured.value
+    case None then default
+  end
+end
+
+let known: Option<Measurement> = Some(Measurement { value: 9.81, uncertainty: 0.01 })
+let unknown: Option<Measurement> = None

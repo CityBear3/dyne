@@ -38,14 +38,151 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
                 unreachable!()
             }
         }
+        TokenKind::Struct => Ok(Item::Struct(parse_struct_def(p)?)),
+        TokenKind::Enum => Ok(Item::Enum(parse_enum_def(p)?)),
         _ => Err(CompileError::parse(
             p.current_span(),
             format!(
-                "expected top-level item (function or let), found {:?}",
+                "expected top-level item (function, let, struct, or enum), found {:?}",
                 p.peek_kind()
             ),
         )),
     }
+}
+
+fn parse_struct_def(p: &mut Parser) -> Result<crate::ast::StructDef, CompileError> {
+    use crate::ast::{StructDef, StructField};
+    let start = p.current_span();
+    p.expect(&TokenKind::Struct, "'struct'")?;
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => return Err(CompileError::parse(name_tok.span, "expected struct name")),
+    };
+    p.advance();
+    p.consume_newlines();
+    let mut fields = Vec::new();
+    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Eof) {
+        let field_start = p.current_span();
+        let fname_tok = p.peek().clone();
+        let fname = match &fname_tok.kind {
+            TokenKind::Ident(n) => n.clone(),
+            _ => return Err(CompileError::parse(fname_tok.span, "expected field name")),
+        };
+        p.advance();
+        p.expect(&TokenKind::Colon, "':'")?;
+        let ty = crate::parser::types::parse_type(p)?;
+        let span = Span::merge(field_start, ty.span);
+        fields.push(StructField {
+            name: fname,
+            ty,
+            span,
+        });
+        p.eat(&TokenKind::Comma);
+        if !matches!(
+            p.peek_kind(),
+            TokenKind::Newline | TokenKind::End | TokenKind::Eof
+        ) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after struct field, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
+        p.consume_newlines();
+    }
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(StructDef {
+        name,
+        fields,
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_enum_def(p: &mut Parser) -> Result<crate::ast::EnumDef, CompileError> {
+    use crate::ast::EnumDef;
+    let start = p.current_span();
+    p.expect(&TokenKind::Enum, "'enum'")?;
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => return Err(CompileError::parse(name_tok.span, "expected enum name")),
+    };
+    p.advance();
+    let type_params = crate::parser::types::parse_type_param_list(p)?;
+    p.consume_newlines();
+    let mut variants = Vec::new();
+    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Eof) {
+        variants.push(parse_variant_decl(p)?);
+        p.eat(&TokenKind::Comma);
+        if !matches!(
+            p.peek_kind(),
+            TokenKind::Newline | TokenKind::End | TokenKind::Eof
+        ) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after enum variant, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
+        p.consume_newlines();
+    }
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(EnumDef {
+        name,
+        type_params,
+        variants,
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_variant_decl(p: &mut Parser) -> Result<crate::ast::EnumVariant, CompileError> {
+    use crate::ast::EnumVariant;
+    let start = p.current_span();
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => return Err(CompileError::parse(name_tok.span, "expected variant name")),
+    };
+    let name_span = name_tok.span;
+    p.advance();
+    let mut payload = Vec::new();
+    let mut end_span = name_span;
+    if p.eat(&TokenKind::LParen) {
+        p.consume_newlines();
+        if p.at(&TokenKind::RParen) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "empty payload list `()` is not allowed; omit the parentheses for a no-payload variant",
+            ));
+        }
+        payload.push(crate::parser::types::parse_type(p)?);
+        p.consume_newlines();
+        while p.eat(&TokenKind::Comma) {
+            p.consume_newlines();
+            if p.at(&TokenKind::RParen) {
+                break;
+            }
+            payload.push(crate::parser::types::parse_type(p)?);
+            p.consume_newlines();
+        }
+        // Capture span of `)` BEFORE consuming, so the variant span doesn't
+        // overshoot into the following Newline / Comma / `end` / Eof.
+        // Mirrors the call-args precedent in parse_postfix.
+        end_span = p.current_span();
+        p.expect(&TokenKind::RParen, "')'")?;
+    }
+    Ok(EnumVariant {
+        name,
+        payload,
+        span: Span::merge(start, end_span),
+    })
 }
 
 pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
@@ -559,5 +696,177 @@ mod tests {
     fn newline_after_each_top_level_item_works() {
         let p = parse_prog("let x: Int = 1\nlet y: Int = 2\n");
         assert_eq!(p.items.len(), 2);
+    }
+
+    #[test]
+    fn struct_def_simple() {
+        let p = parse_prog("struct Point\n  x: Scalar\n  y: Scalar\nend");
+        assert_eq!(p.items.len(), 1);
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.name, "Point");
+            assert_eq!(s.fields.len(), 2);
+            assert_eq!(s.fields[0].name, "x");
+            assert_eq!(s.fields[1].name, "y");
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_empty() {
+        let p = parse_prog("struct Marker\nend");
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.name, "Marker");
+            assert!(s.fields.is_empty());
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_unit_annotated_fields() {
+        let src = "struct State\n  q: Vec<3>\n  p: Vec<3>\n  t: Scalar\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.fields.len(), 3);
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_trailing_comma_per_field() {
+        let src = "struct Pair\n  a: Scalar,\n  b: Scalar,\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Struct(s) = &p.items[0] {
+            assert_eq!(s.fields.len(), 2);
+        } else {
+            panic!("expected Struct item");
+        }
+    }
+
+    #[test]
+    fn struct_def_field_without_newline_rejected() {
+        let toks = tokenize("struct Bad\n  x: Scalar y: Scalar\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected newline after struct field"));
+    }
+
+    #[test]
+    fn enum_def_simple_no_payload() {
+        let p = parse_prog("enum Color\n  Red\n  Green\n  Blue\nend");
+        if let crate::ast::Item::Enum(e) = &p.items[0] {
+            assert_eq!(e.name, "Color");
+            assert!(e.type_params.is_empty());
+            assert_eq!(e.variants.len(), 3);
+            assert_eq!(e.variants[0].name, "Red");
+            assert!(e.variants[0].payload.is_empty());
+        } else {
+            panic!("expected Enum item");
+        }
+    }
+
+    #[test]
+    fn enum_def_with_payload() {
+        let src = "enum Energy\n  Kinetic(Scalar)\n  Total(Scalar, Scalar)\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Enum(e) = &p.items[0] {
+            assert_eq!(e.variants.len(), 2);
+            assert_eq!(e.variants[0].payload.len(), 1);
+            assert_eq!(e.variants[1].payload.len(), 2);
+        } else {
+            panic!("expected Enum item");
+        }
+    }
+
+    #[test]
+    fn enum_def_generic_two_params() {
+        let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Enum(e) = &p.items[0] {
+            assert_eq!(e.name, "Result");
+            assert_eq!(e.type_params, vec!["T".to_string(), "E".to_string()]);
+            assert_eq!(e.variants.len(), 2);
+        } else {
+            panic!("expected Enum item");
+        }
+    }
+
+    #[test]
+    fn enum_def_option_one_param() {
+        let src = "enum Option<T>\n  Some(T)\n  None\nend";
+        let p = parse_prog(src);
+        if let crate::ast::Item::Enum(e) = &p.items[0] {
+            assert_eq!(e.type_params, vec!["T".to_string()]);
+            assert_eq!(e.variants[0].payload.len(), 1);
+            assert_eq!(e.variants[1].payload.len(), 0);
+        } else {
+            panic!("expected Enum item");
+        }
+    }
+
+    #[test]
+    fn enum_def_variant_without_newline_rejected() {
+        let toks = tokenize("enum Bad\n  Red Green\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected newline after enum variant"));
+    }
+
+    #[test]
+    fn enum_def_missing_type_param_name_rejected() {
+        let toks = tokenize("enum Bad<1>\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected type parameter name"));
+    }
+
+    #[test]
+    fn enum_def_missing_variant_name_rejected() {
+        let toks = tokenize("enum Bad\n  1\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected variant name"));
+    }
+
+    #[test]
+    fn enum_def_empty_type_params_rejected() {
+        let toks = tokenize("enum Foo<>\n  V\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("empty type parameter list"));
+    }
+
+    #[test]
+    fn enum_def_empty_payload_rejected() {
+        let toks = tokenize("enum E\n  Foo()\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("empty payload list"));
+    }
+
+    #[test]
+    fn struct_def_missing_name_rejected() {
+        let toks = tokenize("struct 1\n  x: Int\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected struct name"));
+    }
+
+    #[test]
+    fn struct_def_field_name_missing_rejected() {
+        let toks = tokenize("struct S\n  1: Int\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected field name"));
+    }
+
+    #[test]
+    fn enum_def_missing_name_rejected() {
+        let toks = tokenize("enum 1\n  V\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_program(&mut p).unwrap_err();
+        assert!(err.message.contains("expected enum name"));
     }
 }

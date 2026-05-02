@@ -69,6 +69,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
         }
         TokenKind::LBracket => parse_vec_or_mat_lit(p),
         TokenKind::If => parse_if_expr(p),
+        TokenKind::Match => parse_match_expr(p),
         _ => Err(CompileError::parse(
             tok.span,
             format!("expected expression, found {:?}", tok.kind),
@@ -233,10 +234,51 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
                     span,
                 };
             }
+            TokenKind::LBrace => {
+                let name = if let ExprKind::Ident(n) = &expr.kind {
+                    n.clone()
+                } else {
+                    break;
+                };
+                p.advance();
+                p.consume_newlines();
+                let mut fields = Vec::new();
+                if !p.at(&TokenKind::RBrace) {
+                    fields.push(parse_struct_lit_field(p)?);
+                    p.consume_newlines();
+                    while p.eat(&TokenKind::Comma) {
+                        p.consume_newlines();
+                        if p.at(&TokenKind::RBrace) {
+                            break;
+                        }
+                        fields.push(parse_struct_lit_field(p)?);
+                        p.consume_newlines();
+                    }
+                }
+                let end = p.current_span();
+                p.expect(&TokenKind::RBrace, "'}'")?;
+                let span = Span::merge(expr.span, end);
+                expr = Expr {
+                    kind: ExprKind::StructLit(name, fields),
+                    span,
+                };
+            }
             _ => break,
         }
     }
     Ok(expr)
+}
+
+fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError> {
+    let name_tok = p.peek().clone();
+    let name = match &name_tok.kind {
+        TokenKind::Ident(n) => n.clone(),
+        _ => return Err(CompileError::parse(name_tok.span, "expected field name")),
+    };
+    p.advance();
+    p.expect(&TokenKind::Colon, "':'")?;
+    let value = parse_expr(p)?;
+    Ok((name, value))
 }
 
 fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
@@ -323,6 +365,200 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
         TokenKind::Slash => (BinOp::Div, 9, 10),
         TokenKind::Caret => (BinOp::Pow, 12, 11), // right-associative
         _ => return None,
+    })
+}
+
+use crate::ast::{Pattern, PatternKind};
+
+const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are rejected: IEEE 754 equality is unreliable (NaN \u{2260} NaN, rounding error). Only Int / Bool / String literal patterns are supported in `case` arms.";
+
+pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
+    let start = p.current_span();
+    let tok = p.peek().clone();
+    match &tok.kind {
+        TokenKind::Ident(name) if name == "_" => {
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::Wildcard,
+                span: tok.span,
+            })
+        }
+        TokenKind::Ident(name) => {
+            let n = name.clone();
+            p.advance();
+            if p.eat(&TokenKind::LParen) {
+                p.consume_newlines();
+                if p.at(&TokenKind::RParen) {
+                    return Err(CompileError::parse(
+                        p.current_span(),
+                        "empty payload list `()` is not allowed; use the variant name without parentheses",
+                    ));
+                }
+                let mut payload = Vec::new();
+                payload.push(parse_pattern(p)?);
+                p.consume_newlines();
+                while p.eat(&TokenKind::Comma) {
+                    p.consume_newlines();
+                    if p.at(&TokenKind::RParen) {
+                        break;
+                    }
+                    payload.push(parse_pattern(p)?);
+                    p.consume_newlines();
+                }
+                let end = p.current_span();
+                p.expect(&TokenKind::RParen, "')'")?;
+                Ok(Pattern {
+                    kind: PatternKind::Variant(n, payload),
+                    span: Span::merge(start, end),
+                })
+            } else {
+                Ok(Pattern {
+                    kind: PatternKind::Ident(n),
+                    span: tok.span,
+                })
+            }
+        }
+        TokenKind::Int(n) => {
+            let v = *n;
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::IntLit(v),
+                span: tok.span,
+            })
+        }
+        TokenKind::Minus => {
+            p.advance();
+            let next = p.peek().clone();
+            match next.kind {
+                TokenKind::Int(n) => {
+                    p.advance();
+                    Ok(Pattern {
+                        kind: PatternKind::IntLit(-n),
+                        span: Span::merge(tok.span, next.span),
+                    })
+                }
+                TokenKind::Float(_) => Err(CompileError::parse(
+                    Span::merge(tok.span, next.span),
+                    FLOAT_PATTERN_REJECTED,
+                )),
+                _ => Err(CompileError::parse(
+                    next.span,
+                    format!(
+                        "expected integer literal after '-' in pattern, found {:?}",
+                        next.kind
+                    ),
+                )),
+            }
+        }
+        TokenKind::Float(_) => Err(CompileError::parse(tok.span, FLOAT_PATTERN_REJECTED)),
+        TokenKind::True => {
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::BoolLit(true),
+                span: tok.span,
+            })
+        }
+        TokenKind::False => {
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::BoolLit(false),
+                span: tok.span,
+            })
+        }
+        TokenKind::Str(s) => {
+            let s = s.clone();
+            p.advance();
+            Ok(Pattern {
+                kind: PatternKind::StrLit(s),
+                span: tok.span,
+            })
+        }
+        _ => Err(CompileError::parse(
+            tok.span,
+            format!("expected pattern, found {:?}", tok.kind),
+        )),
+    }
+}
+
+fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
+    use crate::ast::MatchArm;
+    let start = p.current_span();
+    p.expect(&TokenKind::Match, "'match'")?;
+    let scrutinee = parse_expr(p)?;
+    p.consume_newlines();
+
+    let mut arms = Vec::new();
+    while !matches!(p.peek_kind(), TokenKind::End) {
+        if matches!(p.peek_kind(), TokenKind::Eof) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "unexpected end of input inside match expression",
+            ));
+        }
+        // Capture span of `case` BEFORE consuming, so the arm span includes
+        // the keyword (not just `pattern then body`).
+        let case_span = p.current_span();
+        p.expect(&TokenKind::Case, "'case'")?;
+        let pattern = parse_pattern(p)?;
+        p.expect(&TokenKind::Then, "'then'")?;
+        let body = parse_match_arm_body(p)?;
+        let arm_span = Span::merge(case_span, body.span);
+        arms.push(MatchArm {
+            pattern,
+            body,
+            span: arm_span,
+        });
+    }
+
+    if arms.is_empty() {
+        return Err(CompileError::parse(
+            p.current_span(),
+            "match expression requires at least one `case` arm",
+        ));
+    }
+
+    let end = p.current_span();
+    p.expect(&TokenKind::End, "'end'")?;
+    Ok(Expr {
+        kind: ExprKind::Match(Box::new(scrutinee), arms),
+        span: Span::merge(start, end),
+    })
+}
+
+fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileError> {
+    use crate::ast::Block;
+    use crate::parser::stmt::parse_stmt;
+    let start = p.current_span();
+    p.consume_newlines();
+    let mut stmts = Vec::new();
+    let mut end_span = start;
+    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Case) {
+        if matches!(p.peek_kind(), TokenKind::Eof) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "unexpected end of input inside match arm body",
+            ));
+        }
+        let stmt = parse_stmt(p)?;
+        end_span = stmt.span;
+        stmts.push(stmt);
+        if !matches!(
+            p.peek_kind(),
+            TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Case
+        ) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after match arm statement, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
+        p.consume_newlines();
+    }
+    Ok(Block {
+        stmts,
+        span: Span::merge(start, end_span),
     })
 }
 
@@ -720,5 +956,383 @@ mod tests {
         } else {
             panic!("expected If");
         }
+    }
+
+    #[test]
+    fn struct_lit_simple() {
+        let e = parse("Point { x: 1.0, y: 2.0 }");
+        match e.kind {
+            ExprKind::StructLit(name, fields) => {
+                assert_eq!(name, "Point");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "x");
+                assert_eq!(fields[1].0, "y");
+            }
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_lit_empty() {
+        let e = parse("Marker {}");
+        match e.kind {
+            ExprKind::StructLit(name, fields) => {
+                assert_eq!(name, "Marker");
+                assert!(fields.is_empty());
+            }
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_lit_multi_line() {
+        let e = parse("State {\n  q: [1.0, 0.0, 0.0],\n  p: [0.0, 1.0, 0.0],\n  t: 0.0,\n}");
+        match e.kind {
+            ExprKind::StructLit(_, fields) => assert_eq!(fields.len(), 3),
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_lit_used_in_let() {
+        let toks = tokenize("let s: State = State { q: 1.0, p: 0.0 }").unwrap();
+        let mut parser = Parser::new(&toks);
+        let prog = crate::parser::stmt::parse_program(&mut parser).unwrap();
+        assert_eq!(prog.items.len(), 1);
+    }
+
+    #[test]
+    fn lbrace_after_non_ident_does_not_form_struct_lit() {
+        let toks = tokenize("f() { x: 1 }").unwrap();
+        let mut p = Parser::new(&toks);
+        let e = super::parse_expr(&mut p).unwrap();
+        assert!(matches!(e.kind, ExprKind::Call(_, _)));
+        // The `{` must remain unconsumed — postfix loop should have broken.
+        assert!(matches!(p.peek_kind(), TokenKind::LBrace));
+    }
+
+    #[test]
+    fn struct_lit_non_ident_field_rejected() {
+        let toks = tokenize("Point { 1: x }").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("expected field name"));
+    }
+
+    #[test]
+    fn match_simple() {
+        let e = parse("match x\n  case Some(v) then\n    v\n  case None then\n    0\nend");
+        match e.kind {
+            ExprKind::Match(scrutinee, arms) => {
+                assert!(matches!(scrutinee.kind, ExprKind::Ident(_)));
+                assert_eq!(arms.len(), 2);
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn match_with_wildcard() {
+        let e = parse("match x\n  case 0 then\n    1\n  case _ then\n    0\nend");
+        if let ExprKind::Match(_, arms) = e.kind {
+            assert_eq!(arms.len(), 2);
+            assert!(matches!(
+                arms[0].pattern.kind,
+                crate::ast::PatternKind::IntLit(0)
+            ));
+            assert!(matches!(
+                arms[1].pattern.kind,
+                crate::ast::PatternKind::Wildcard
+            ));
+        } else {
+            panic!("expected Match");
+        }
+    }
+
+    #[test]
+    fn match_with_int_literal_payload_arm() {
+        let e = parse(
+            "match x\n  case Some(0) then\n    1\n  case Some(n) then\n    n\n  case None then\n    0\nend",
+        );
+        if let ExprKind::Match(_, arms) = e.kind {
+            assert_eq!(arms.len(), 3);
+        } else {
+            panic!("expected Match");
+        }
+    }
+
+    #[test]
+    fn match_zero_arms_rejected() {
+        let toks = tokenize("match x\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("at least one"));
+    }
+
+    #[test]
+    fn match_arm_multi_statement_body() {
+        let src = "match x\n  case Some(v) then\n    let r: Int = v + 1\n    r\n  case None then\n    0\nend";
+        let e = parse(src);
+        if let ExprKind::Match(_, arms) = e.kind {
+            assert_eq!(arms[0].body.stmts.len(), 2);
+            assert_eq!(arms[1].body.stmts.len(), 1);
+        } else {
+            panic!("expected Match");
+        }
+    }
+
+    #[test]
+    fn match_used_in_let_init() {
+        let src = "let n: Int = match opt\n  case Some(v) then v\n  case None then 0\nend";
+        let toks = tokenize(src).unwrap();
+        let mut parser = Parser::new(&toks);
+        let prog = crate::parser::stmt::parse_program(&mut parser).unwrap();
+        assert_eq!(prog.items.len(), 1);
+    }
+
+    #[test]
+    fn match_missing_case_keyword_rejected() {
+        let toks = tokenize("match x\n  Some(v) then\n    v\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("'case'"));
+    }
+
+    #[test]
+    fn match_missing_then_keyword_rejected() {
+        let toks = tokenize("match x\n  case Some(v)\n    v\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(err.message.contains("'then'"));
+    }
+
+    #[test]
+    fn match_eof_inside_expression_rejected() {
+        // Reaches the outer Eof guard: scrutinee + newlines, then Eof before the first `case`.
+        let toks = tokenize("match x\n").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(
+            err.message
+                .contains("unexpected end of input inside match expression")
+        );
+    }
+
+    #[test]
+    fn match_eof_inside_arm_body_rejected() {
+        let toks = tokenize("match x\n  case _ then\n").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(
+            err.message
+                .contains("unexpected end of input inside match arm body")
+        );
+    }
+
+    fn parse_pat(source: &str) -> crate::ast::Pattern {
+        let toks = tokenize(source).unwrap();
+        let mut p = Parser::new(&toks);
+        super::parse_pattern(&mut p).unwrap()
+    }
+
+    #[test]
+    fn pattern_wildcard() {
+        let p = parse_pat("_");
+        assert!(matches!(p.kind, crate::ast::PatternKind::Wildcard));
+    }
+
+    #[test]
+    fn pattern_ident_binding() {
+        let p = parse_pat("x");
+        match p.kind {
+            crate::ast::PatternKind::Ident(name) => assert_eq!(name, "x"),
+            other => panic!("expected Ident, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_no_payload_variant_parses_as_ident() {
+        // No-payload variant lexes as Ident; semantic phase resolves whether it
+        // is a variant or a free binding.
+        let p = parse_pat("None");
+        match p.kind {
+            crate::ast::PatternKind::Ident(name) => assert_eq!(name, "None"),
+            other => panic!("expected Ident, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_variant_one_payload() {
+        let p = parse_pat("Some(x)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Some");
+                assert_eq!(payload.len(), 1);
+                assert!(matches!(payload[0].kind, crate::ast::PatternKind::Ident(_)));
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_variant_multi_payload() {
+        let p = parse_pat("Total(a, b)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Total");
+                assert_eq!(payload.len(), 2);
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_nested_variant() {
+        let p = parse_pat("Ok(Some(x))");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Ok");
+                assert_eq!(payload.len(), 1);
+                assert!(matches!(
+                    payload[0].kind,
+                    crate::ast::PatternKind::Variant(_, _)
+                ));
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_variant_multi_line_payload() {
+        let p = parse_pat("Total(\n  a,\n  b,\n)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(_, payload) => assert_eq!(payload.len(), 2),
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_int_literal() {
+        let p = parse_pat("42");
+        assert_eq!(p.kind, crate::ast::PatternKind::IntLit(42));
+    }
+
+    #[test]
+    fn pattern_int_literal_negative() {
+        let p = parse_pat("-1");
+        assert_eq!(p.kind, crate::ast::PatternKind::IntLit(-1));
+    }
+
+    #[test]
+    fn pattern_bool_literal_true() {
+        let p = parse_pat("true");
+        assert_eq!(p.kind, crate::ast::PatternKind::BoolLit(true));
+    }
+
+    #[test]
+    fn pattern_bool_literal_false() {
+        let p = parse_pat("false");
+        assert_eq!(p.kind, crate::ast::PatternKind::BoolLit(false));
+    }
+
+    #[test]
+    fn pattern_string_literal() {
+        let p = parse_pat(r#""hello""#);
+        assert_eq!(p.kind, crate::ast::PatternKind::StrLit("hello".into()));
+    }
+
+    #[test]
+    fn pattern_variant_with_int_literal_payload() {
+        let p = parse_pat("Some(0)");
+        match p.kind {
+            crate::ast::PatternKind::Variant(name, payload) => {
+                assert_eq!(name, "Some");
+                assert_eq!(payload[0].kind, crate::ast::PatternKind::IntLit(0));
+            }
+            other => panic!("expected Variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_float_literal_rejected() {
+        let toks = tokenize("3.14").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("floating-point"));
+    }
+
+    #[test]
+    fn pattern_negative_float_rejected() {
+        let toks = tokenize("-3.14").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("floating-point"));
+    }
+
+    #[test]
+    fn pattern_minus_followed_by_non_int_rejected() {
+        let toks = tokenize("-x").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("expected integer literal after '-'"));
+    }
+
+    #[test]
+    fn match_arm_body_span_does_not_include_next_case() {
+        let src = "match x\n  case 0 then 1\n  case _ then 0\nend";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let e = parse_expr(&mut p).unwrap();
+        let ExprKind::Match(_, arms) = e.kind else {
+            panic!("expected Match");
+        };
+        let body_text = &src[arms[0].body.span.start..arms[0].body.span.end];
+        assert!(
+            !body_text.contains("case"),
+            "arm[0].body.span overshot into next case: {body_text:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_unsupported_token_rejected() {
+        let toks = tokenize("+").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("expected pattern"));
+    }
+
+    #[test]
+    fn match_arm_body_two_stmts_on_one_line_rejected() {
+        let toks = tokenize("match x\n  case _ then 1 1\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = parse_expr(&mut p).unwrap_err();
+        assert!(
+            err.message
+                .contains("expected newline after match arm statement")
+        );
+    }
+
+    #[test]
+    fn pattern_variant_empty_payload_rejected() {
+        let toks = tokenize("Foo()").unwrap();
+        let mut p = Parser::new(&toks);
+        let err = super::parse_pattern(&mut p).unwrap_err();
+        assert!(err.message.contains("empty payload list"));
+    }
+
+    #[test]
+    fn last_match_arm_body_span_does_not_include_end() {
+        let src = "match x\n  case _ then 0\nend";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let e = parse_expr(&mut p).unwrap();
+        let ExprKind::Match(_, arms) = e.kind else {
+            panic!("expected Match");
+        };
+        let body_text = &src[arms[0].body.span.start..arms[0].body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "last arm body span includes 'end': {body_text:?}"
+        );
     }
 }

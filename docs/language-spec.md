@@ -271,14 +271,14 @@ enum Energy
 end
 ```
 
-Pattern matching is performed using `match`. Each case uses `then` to begin its body.
+Pattern matching is performed using `match`. Each arm starts with `case Pattern then body`. Pattern forms include wildcards (`_`), bindings, variants with payload, and integer / boolean / string literals. Floating-point literal patterns are rejected at compile time because IEEE 754 equality is unreliable (NaN ≠ NaN, rounding error).
 
 ```
 let file: Result<File, Error> = open("data.csv", "r")
 match file
-    Ok(f) then
+    case Ok(f) then
         // use f
-    Err(e) then
+    case Err(e) then
         printf("Error: %s\n", e)
 end
 ```
@@ -288,7 +288,7 @@ Pattern matching must be exhaustive. If any variant is not covered, a compile er
 ```
 // Compile error: missing case `None`
 match opt
-    Some(x) then
+    case Some(x) then
         ...
 end
 ```
@@ -395,11 +395,11 @@ Provides basic file operations: opening, reading, writing, and closing files. Fi
 ```
 let file: Result<File, Error> = open("output.csv", "w")
 match file
-    Ok(f) then
+    case Ok(f) then
         write(f, "t,energy\n")
         write(f, printf("%f,%f\n", t, energy))
         close(f)
-    Err(e) then
+    case Err(e) then
         printf("Failed to open file: %s\n", e)
 end
 ```

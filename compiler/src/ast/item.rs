@@ -102,6 +102,9 @@ pub enum PatternKind {
     Wildcard,
     Ident(String),
     Variant(String, Vec<Pattern>),
+    IntLit(i64),
+    BoolLit(bool),
+    StrLit(String),
 }
 
 #[cfg(test)]
@@ -115,6 +118,22 @@ mod tests {
             span: Span::new(0, 0),
         };
         assert_eq!(p.items.len(), 0);
+    }
+
+    #[test]
+    fn pattern_literal_variants_distinct_and_typed() {
+        assert_eq!(PatternKind::IntLit(42), PatternKind::IntLit(42));
+        assert_ne!(PatternKind::IntLit(42), PatternKind::IntLit(0));
+        assert_ne!(PatternKind::BoolLit(true), PatternKind::BoolLit(false));
+        assert_ne!(PatternKind::IntLit(1), PatternKind::BoolLit(true));
+        assert_eq!(
+            PatternKind::StrLit("hello".into()),
+            PatternKind::StrLit("hello".into()),
+        );
+        assert_ne!(
+            PatternKind::StrLit("a".into()),
+            PatternKind::StrLit("b".into()),
+        );
     }
 
     #[test]
