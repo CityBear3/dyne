@@ -132,6 +132,8 @@ Each arm body is a full block (a sequence of statements), not a single expressio
 
 A match expression with zero arms is a parse error: `match x\nend` is rejected with a message indicating that at least one `case` arm is required. This is a parser-level decision rather than a semantic-phase exhaustiveness check because it is also syntactically meaningless.
 
+A match arm's body may be syntactically empty (`case Pat then end` or `case Pat then case Pat then ...`); the parser accepts this. Validation that each arm produces a value is delegated to the semantic phase, since match is an expression and the value-producing rule depends on type information not available at parse time. This is consistent with the parser's general posture of accepting block forms (`if`/`while`/`for` also permit empty bodies) and rejecting them in later phases when the type system requires a value.
+
 ### 4.6 Pattern Parsing
 
 The pattern grammar accepted in Stage 2 is
