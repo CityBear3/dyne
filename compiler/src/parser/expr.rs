@@ -527,6 +527,7 @@ fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileErro
     let start = p.current_span();
     p.consume_newlines();
     let mut stmts = Vec::new();
+    let mut end_span = start;
     while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Case) {
         if matches!(p.peek_kind(), TokenKind::Eof) {
             return Err(CompileError::parse(
@@ -535,6 +536,7 @@ fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileErro
             ));
         }
         let stmt = parse_stmt(p)?;
+        end_span = stmt.span;
         stmts.push(stmt);
         if !matches!(
             p.peek_kind(),
@@ -550,10 +552,9 @@ fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileErro
         }
         p.consume_newlines();
     }
-    let end = p.current_span();
     Ok(Block {
         stmts,
-        span: Span::merge(start, end),
+        span: Span::merge(start, end_span),
     })
 }
 
@@ -1270,5 +1271,37 @@ mod tests {
         let mut p = Parser::new(&toks);
         let err = super::parse_pattern(&mut p).unwrap_err();
         assert!(err.message.contains("expected integer literal after '-'"));
+    }
+
+    #[test]
+    fn match_arm_body_span_does_not_include_next_case() {
+        let src = "match x\n  case 0 then 1\n  case _ then 0\nend";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let e = parse_expr(&mut p).unwrap();
+        let ExprKind::Match(_, arms) = e.kind else {
+            panic!("expected Match");
+        };
+        let body_text = &src[arms[0].body.span.start..arms[0].body.span.end];
+        assert!(
+            !body_text.contains("case"),
+            "arm[0].body.span overshot into next case: {body_text:?}"
+        );
+    }
+
+    #[test]
+    fn last_match_arm_body_span_does_not_include_end() {
+        let src = "match x\n  case _ then 0\nend";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let e = parse_expr(&mut p).unwrap();
+        let ExprKind::Match(_, arms) = e.kind else {
+            panic!("expected Match");
+        };
+        let body_text = &src[arms[0].body.span.start..arms[0].body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "last arm body span includes 'end': {body_text:?}"
+        );
     }
 }
