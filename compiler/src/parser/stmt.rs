@@ -934,4 +934,82 @@ mod tests {
         };
         assert_eq!(e.type_params, vec!["T".to_string(), "U".to_string()]);
     }
+
+    /// Pin: function body `Block.span` does not overshoot into the closing
+    /// `end` keyword. Anchors the Task-4 fix (parse_block_body captures
+    /// end_span = stmt.span instead of p.current_span()).
+    #[test]
+    fn function_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  return 1\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let crate::ast::Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let body_text = &src[func.body.span.start..func.body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "function body span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Pin: `while` body `Block.span` does not overshoot into the closing
+    /// `end` keyword. Anchors the Task-4 fix.
+    #[test]
+    fn while_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  while true do\n    return 1\n  end\n  return 0\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let crate::ast::Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        // Find the While statement inside the function body.
+        let while_stmt = func
+            .body
+            .stmts
+            .iter()
+            .find(|s| matches!(s.kind, crate::ast::StmtKind::While(_)))
+            .expect("expected While stmt");
+        let crate::ast::StmtKind::While(ref ws) = while_stmt.kind else {
+            unreachable!()
+        };
+        let body_text = &src[ws.body.span.start..ws.body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "while body span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Pin: `if` then-branch `Block.span` does not overshoot into `else` or
+    /// `end`. Anchors the Task-4 fix.
+    #[test]
+    fn if_then_branch_span_does_not_include_else() {
+        let src =
+            "function f(): Int\n  if true then\n    return 1\n  else\n    return 2\n  end\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let crate::ast::Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        // First stmt in the body should be ExprStmt(If(...)).
+        let first_stmt = &func.body.stmts[0];
+        let crate::ast::StmtKind::Expr(ref e) = first_stmt.kind else {
+            panic!("expected ExprStmt");
+        };
+        let crate::ast::ExprKind::If(ref ifx) = e.kind else {
+            panic!("expected If expression");
+        };
+        let then_text = &src[ifx.then_block.span.start..ifx.then_block.span.end];
+        assert!(
+            !then_text.contains("else"),
+            "if then-branch span overshoots into 'else': {then_text:?}"
+        );
+        assert!(
+            !then_text.contains("end"),
+            "if then-branch span overshoots into 'end': {then_text:?}"
+        );
+    }
 }
