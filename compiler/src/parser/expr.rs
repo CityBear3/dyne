@@ -12,69 +12,73 @@ pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
-    let tok = p.peek().clone();
-    match &tok.kind {
+    match p.peek_kind() {
         TokenKind::Int(n) => {
-            p.advance();
+            let v = *n;
+            let span = p.advance().span;
             Ok(Expr {
-                kind: ExprKind::IntLit(*n),
-                span: tok.span,
+                kind: ExprKind::IntLit(v),
+                span,
             })
         }
         TokenKind::Float(n) => {
-            p.advance();
+            let v = *n;
+            let span = p.advance().span;
             Ok(Expr {
-                kind: ExprKind::FloatLit(*n),
-                span: tok.span,
+                kind: ExprKind::FloatLit(v),
+                span,
             })
         }
         TokenKind::Str(s) => {
             let s = s.clone();
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::StrLit(s),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::True => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::BoolLit(true),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::False => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::BoolLit(false),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Ident(name) => {
             let name = name.clone();
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::Ident(name),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::LParen => {
-            p.advance();
+            let start = p.advance().span;
             let inner = parse_expr(p)?;
             let end = p.peek().span;
             p.expect(&TokenKind::RParen, "')'")?;
             Ok(Expr {
                 kind: inner.kind,
-                span: Span::merge(tok.span, end),
+                span: Span::merge(start, end),
             })
         }
         TokenKind::LBracket => parse_vec_or_mat_lit(p),
         TokenKind::If => parse_if_expr(p),
         TokenKind::Match => parse_match_expr(p),
-        _ => Err(CompileError::parse(
-            tok.span,
-            format!("expected expression, found {:?}", tok.kind),
-        )),
+        other => {
+            let span = p.current_span();
+            Err(CompileError::parse(
+                span,
+                format!("expected expression, found {other:?}"),
+            ))
+        }
     }
 }
 
@@ -215,18 +219,17 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
             }
             TokenKind::Dot => {
                 p.advance();
-                let field_tok = p.peek().clone();
-                let field = match &field_tok.kind {
+                let field = match p.peek_kind() {
                     TokenKind::Ident(n) => n.clone(),
-                    _ => {
+                    other => {
                         return Err(CompileError::parse(
-                            field_tok.span,
-                            format!("expected field name, found {:?}", field_tok.kind),
+                            p.current_span(),
+                            format!("expected field name, found {other:?}"),
                         ));
                     }
                 };
-                p.advance();
-                let span = Span::merge(expr.span, field_tok.span);
+                let field_span = p.advance().span;
+                let span = Span::merge(expr.span, field_span);
                 expr = Expr {
                     kind: ExprKind::FieldAccess(Box::new(expr), field),
                     span,
@@ -268,10 +271,9 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError> {
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected field name")),
+        _ => return Err(CompileError::parse(p.current_span(), "expected field name")),
     };
     p.advance();
     p.expect(&TokenKind::Colon, "':'")?;
@@ -370,18 +372,17 @@ const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are reject
 
 pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
     let start = p.current_span();
-    let tok = p.peek().clone();
-    match &tok.kind {
+    match p.peek_kind() {
         TokenKind::Ident(name) if name == "_" => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::Wildcard,
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Ident(name) => {
             let n = name.clone();
-            p.advance();
+            let ident_span = p.advance().span;
             if p.eat(&TokenKind::LParen) {
                 p.consume_newlines();
                 if p.at(&TokenKind::RParen) {
@@ -410,69 +411,75 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
             } else {
                 Ok(Pattern {
                     kind: PatternKind::Ident(n),
-                    span: tok.span,
+                    span: ident_span,
                 })
             }
         }
         TokenKind::Int(n) => {
             let v = *n;
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::IntLit(v),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Minus => {
             p.advance();
-            let next = p.peek().clone();
-            match next.kind {
+            match p.peek_kind() {
                 TokenKind::Int(n) => {
-                    p.advance();
+                    let v = *n;
+                    let int_span = p.advance().span;
                     Ok(Pattern {
-                        kind: PatternKind::IntLit(-n),
-                        span: Span::merge(tok.span, next.span),
+                        kind: PatternKind::IntLit(-v),
+                        span: Span::merge(start, int_span),
                     })
                 }
-                TokenKind::Float(_) => Err(CompileError::parse(
-                    Span::merge(tok.span, next.span),
-                    FLOAT_PATTERN_REJECTED,
-                )),
-                _ => Err(CompileError::parse(
-                    next.span,
-                    format!(
-                        "expected integer literal after '-' in pattern, found {:?}",
-                        next.kind
-                    ),
-                )),
+                TokenKind::Float(_) => {
+                    let float_span = p.current_span();
+                    Err(CompileError::parse(
+                        Span::merge(start, float_span),
+                        FLOAT_PATTERN_REJECTED,
+                    ))
+                }
+                other => {
+                    let span = p.current_span();
+                    Err(CompileError::parse(
+                        span,
+                        format!("expected integer literal after '-' in pattern, found {other:?}"),
+                    ))
+                }
             }
         }
-        TokenKind::Float(_) => Err(CompileError::parse(tok.span, FLOAT_PATTERN_REJECTED)),
+        TokenKind::Float(_) => Err(CompileError::parse(start, FLOAT_PATTERN_REJECTED)),
         TokenKind::True => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::BoolLit(true),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::False => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::BoolLit(false),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Str(s) => {
             let s = s.clone();
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::StrLit(s),
-                span: tok.span,
+                span,
             })
         }
-        _ => Err(CompileError::parse(
-            tok.span,
-            format!("expected pattern, found {:?}", tok.kind),
-        )),
+        other => {
+            let span = p.current_span();
+            Err(CompileError::parse(
+                span,
+                format!("expected pattern, found {other:?}"),
+            ))
+        }
     }
 }
 

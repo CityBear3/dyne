@@ -54,20 +54,23 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
 fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Struct, "'struct'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected struct name")),
+        _ => {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "expected struct name",
+            ));
+        }
     };
     p.advance();
     p.consume_newlines();
     let mut fields = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Eof) {
         let field_start = p.current_span();
-        let fname_tok = p.peek().clone();
-        let fname = match &fname_tok.kind {
+        let fname = match p.peek_kind() {
             TokenKind::Ident(n) => n.clone(),
-            _ => return Err(CompileError::parse(fname_tok.span, "expected field name")),
+            _ => return Err(CompileError::parse(p.current_span(), "expected field name")),
         };
         p.advance();
         p.expect(&TokenKind::Colon, "':'")?;
@@ -105,10 +108,9 @@ fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
 fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Enum, "'enum'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected enum name")),
+        _ => return Err(CompileError::parse(p.current_span(), "expected enum name")),
     };
     p.advance();
     let type_params = crate::parser::types::parse_type_param_list(p)?;
@@ -143,13 +145,16 @@ fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
 
 fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, CompileError> {
     let start = p.current_span();
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected variant name")),
+        _ => {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "expected variant name",
+            ));
+        }
     };
-    let name_span = name_tok.span;
-    p.advance();
+    let name_span = p.advance().span;
     let mut payload = Vec::new();
     let mut end_span = name_span;
     if p.eat(&TokenKind::LParen) {
@@ -197,13 +202,12 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 fn parse_let_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Let, "'let'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => {
+        other => {
             return Err(CompileError::parse(
-                name_tok.span,
-                format!("expected identifier after 'let', found {:?}", name_tok.kind),
+                p.current_span(),
+                format!("expected identifier after 'let', found {other:?}"),
             ));
         }
     };
@@ -280,12 +284,11 @@ fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::For, "'for'")?;
-    let name_tok = p.peek().clone();
-    let first = match &name_tok.kind {
+    let first = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
             return Err(CompileError::parse(
-                name_tok.span,
+                p.current_span(),
                 "expected identifier after 'for'",
             ));
         }
@@ -314,12 +317,11 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 
     // Form: `for k, v in e do ... end`
     if p.eat(&TokenKind::Comma) {
-        let second_tok = p.peek().clone();
-        let second = match &second_tok.kind {
+        let second = match p.peek_kind() {
             TokenKind::Ident(n) => n.clone(),
             _ => {
                 return Err(CompileError::parse(
-                    second_tok.span,
+                    p.current_span(),
                     "expected identifier after ','",
                 ));
             }
@@ -362,11 +364,13 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Function, "'function'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(name_tok.span, "expected function name"));
+            return Err(CompileError::parse(
+                p.current_span(),
+                "expected function name",
+            ));
         }
     };
     p.advance();
@@ -401,20 +405,19 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
 }
 
 fn parse_param(p: &mut Parser) -> Result<Param, CompileError> {
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
             return Err(CompileError::parse(
-                name_tok.span,
+                p.current_span(),
                 "expected parameter name",
             ));
         }
     };
-    p.advance();
+    let name_span = p.advance().span;
     p.expect(&TokenKind::Colon, "':'")?;
     let ty = parse_type(p)?;
-    let span = Span::merge(name_tok.span, ty.span);
+    let span = Span::merge(name_span, ty.span);
     Ok(Param { name, ty, span })
 }
 
