@@ -4,6 +4,7 @@ use crate::ast::{Type, TypeArg, TypeKind, UnitExpr, UnitExprKind};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
+use crate::parser::stmt::{EmptyHandling, parse_comma_list};
 use crate::source::Span;
 
 pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
@@ -15,13 +16,7 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     {
         p.advance();
         p.expect(&TokenKind::LParen, "'('")?;
-        let mut params = Vec::new();
-        if !p.at(&TokenKind::RParen) {
-            params.push(parse_type(p)?);
-            while p.eat(&TokenKind::Comma) {
-                params.push(parse_type(p)?);
-            }
-        }
+        let params = parse_comma_list(p, &TokenKind::RParen, EmptyHandling::Allow, parse_type)?;
         p.expect(&TokenKind::RParen, "')'")?;
         p.expect(&TokenKind::Arrow, "'->'")?;
         let ret = parse_type(p)?;
@@ -45,11 +40,7 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     let ident_span = p.advance().span;
 
     if p.eat(&TokenKind::Lt) {
-        let mut args = Vec::new();
-        args.push(parse_type_arg(p)?);
-        while p.eat(&TokenKind::Comma) {
-            args.push(parse_type_arg(p)?);
-        }
+        let args = parse_comma_list(p, &TokenKind::Gt, EmptyHandling::RequireOne, parse_type_arg)?;
         let end_span = p.current_span();
         p.expect(&TokenKind::Gt, "'>'")?;
         Ok(Type {
@@ -68,17 +59,14 @@ pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, Compi
     if !p.eat(&TokenKind::Lt) {
         return Ok(Vec::new());
     }
-    if p.at(&TokenKind::Gt) {
-        return Err(CompileError::parse(
-            p.current_span(),
+    let params = parse_comma_list(
+        p,
+        &TokenKind::Gt,
+        EmptyHandling::Reject(
             "empty type parameter list `<>` is not allowed; omit the brackets entirely",
-        ));
-    }
-    let mut params = Vec::new();
-    params.push(parse_type_param_name(p)?);
-    while p.eat(&TokenKind::Comma) {
-        params.push(parse_type_param_name(p)?);
-    }
+        ),
+        parse_type_param_name,
+    )?;
     p.expect(&TokenKind::Gt, "'>'")?;
     Ok(params)
 }
@@ -270,6 +258,21 @@ mod tests {
     #[test]
     fn function_type() {
         let t = parse("Fn(Scalar, Scalar) -> Scalar");
+        if let TypeKind::Function(params, ret) = t.kind {
+            assert_eq!(params.len(), 2);
+            assert!(matches!(ret.kind, TypeKind::Named(ref n) if n == "Scalar"));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    /// Pin: `Fn(...)` parameter lists accept newlines around items and
+    /// trailing commas, as a side effect of using `parse_comma_list`. Anchors
+    /// the Stage 2 §5.1 multi-line / trailing-comma convention against
+    /// future stricter implementations of the helper.
+    #[test]
+    fn fn_type_params_accept_newlines_around_items() {
+        let t = parse("Fn(\n  Scalar,\n  Scalar,\n) -> Scalar");
         if let TypeKind::Function(params, ret) = t.kind {
             assert_eq!(params.len(), 2);
             assert!(matches!(ret.kind, TypeKind::Named(ref n) if n == "Scalar"));

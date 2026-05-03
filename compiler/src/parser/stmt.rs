@@ -158,23 +158,14 @@ fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, CompileError> {
     let mut payload = Vec::new();
     let mut end_span = name_span;
     if p.eat(&TokenKind::LParen) {
-        p.consume_newlines();
-        if p.at(&TokenKind::RParen) {
-            return Err(CompileError::parse(
-                p.current_span(),
+        payload = parse_comma_list(
+            p,
+            &TokenKind::RParen,
+            EmptyHandling::Reject(
                 "empty payload list `()` is not allowed; omit the parentheses for a no-payload variant",
-            ));
-        }
-        payload.push(crate::parser::types::parse_type(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RParen) {
-                break;
-            }
-            payload.push(crate::parser::types::parse_type(p)?);
-            p.consume_newlines();
-        }
+            ),
+            crate::parser::types::parse_type,
+        )?;
         // Capture span of `)` BEFORE consuming, so the variant span doesn't
         // overshoot into the following Newline / Comma / `end` / Eof.
         // Mirrors the call-args precedent in parse_postfix.
@@ -375,20 +366,7 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
     };
     p.advance();
     p.expect(&TokenKind::LParen, "'('")?;
-    p.consume_newlines();
-    let mut params = Vec::new();
-    if !p.at(&TokenKind::RParen) {
-        params.push(parse_param(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RParen) {
-                break; // trailing comma
-            }
-            params.push(parse_param(p)?);
-            p.consume_newlines();
-        }
-    }
+    let params = parse_comma_list(p, &TokenKind::RParen, EmptyHandling::Allow, parse_param)?;
     p.expect(&TokenKind::RParen, "')'")?;
     p.expect(&TokenKind::Colon, "':'")?;
     let return_ty = parse_type(p)?;
@@ -419,6 +397,55 @@ fn parse_param(p: &mut Parser) -> Result<Param, CompileError> {
     let ty = parse_type(p)?;
     let span = Span::merge(name_span, ty.span);
     Ok(Param { name, ty, span })
+}
+
+/// How `parse_comma_list` should treat an empty list (closing token immediately
+/// after the opening boundary).
+pub(crate) enum EmptyHandling {
+    /// Empty list is allowed; return `Vec::new()`.
+    Allow,
+    /// Empty list is rejected; emit `CompileError::parse` with this message.
+    Reject(&'static str),
+    /// Don't pre-check; let `parse_one` produce its own error if it fails.
+    /// Use when the original code did not have an explicit empty check.
+    RequireOne,
+}
+
+/// Parse a comma-separated list of items terminated by `close`, with optional
+/// newlines around items and an optional trailing comma. Caller is responsible
+/// for consuming the opening delimiter and the closing delimiter.
+pub(crate) fn parse_comma_list<T, F>(
+    p: &mut Parser,
+    close: &TokenKind,
+    empty: EmptyHandling,
+    mut parse_one: F,
+) -> Result<Vec<T>, CompileError>
+where
+    F: FnMut(&mut Parser) -> Result<T, CompileError>,
+{
+    p.consume_newlines();
+    if p.at(close) {
+        return match empty {
+            EmptyHandling::Allow => Ok(Vec::new()),
+            EmptyHandling::Reject(msg) => Err(CompileError::parse(p.current_span(), msg)),
+            EmptyHandling::RequireOne => {
+                // Call parse_one which will produce its own error
+                // (e.g. parse_type at `>` fails with "expected type name, found Gt").
+                Ok(vec![parse_one(p)?])
+            }
+        };
+    }
+    let mut items = vec![parse_one(p)?];
+    p.consume_newlines();
+    while p.eat(&TokenKind::Comma) {
+        p.consume_newlines();
+        if p.at(close) {
+            break;
+        }
+        items.push(parse_one(p)?);
+        p.consume_newlines();
+    }
+    Ok(items)
 }
 
 /// Parse a block that ends at any of: End, Else, Elseif.
@@ -869,5 +896,21 @@ mod tests {
         let mut p = Parser::new(&toks);
         let err = parse_program(&mut p).unwrap_err();
         assert!(err.message.contains("expected enum name"));
+    }
+
+    /// Pin: `<T, U>` type-parameter lists accept newlines around items and
+    /// trailing commas, as a side effect of using `parse_comma_list`. Anchors
+    /// the Stage 2 §5.1 multi-line / trailing-comma convention against
+    /// future stricter implementations of the helper.
+    #[test]
+    fn enum_def_type_params_accept_newlines() {
+        let toks = tokenize("enum Foo<\n  T,\n  U,\n>\n  V\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        let crate::ast::Item::Enum(ref e) = prog.items[0] else {
+            panic!("expected Enum item");
+        };
+        assert_eq!(e.type_params, vec!["T".to_string(), "U".to_string()]);
     }
 }

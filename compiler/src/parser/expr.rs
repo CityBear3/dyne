@@ -4,7 +4,9 @@ use crate::ast::{BinOp, Block, Expr, ExprKind, IfExpr, MatchArm, Pattern, Patter
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
-use crate::parser::stmt::{TokenKindKind, parse_block_until, parse_stmt};
+use crate::parser::stmt::{
+    EmptyHandling, TokenKindKind, parse_block_until, parse_comma_list, parse_stmt,
+};
 use crate::source::Span;
 
 pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
@@ -88,17 +90,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     p.consume_newlines();
     // Matrix if first element is '['
     if p.at(&TokenKind::LBracket) {
-        let mut rows = Vec::new();
-        rows.push(parse_row(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RBracket) {
-                break; // trailing comma
-            }
-            rows.push(parse_row(p)?);
-            p.consume_newlines();
-        }
+        let rows = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_row)?;
         let end = p.peek().span;
         p.expect(&TokenKind::RBracket, "']'")?;
         return Ok(Expr {
@@ -107,19 +99,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
         });
     }
     // Vector literal (possibly empty)
-    let mut elems = Vec::new();
-    if !p.at(&TokenKind::RBracket) {
-        elems.push(parse_expr(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RBracket) {
-                break; // trailing comma
-            }
-            elems.push(parse_expr(p)?);
-            p.consume_newlines();
-        }
-    }
+    let elems = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_expr)?;
     let end = p.peek().span;
     p.expect(&TokenKind::RBracket, "']'")?;
     Ok(Expr {
@@ -184,20 +164,8 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
         match p.peek_kind() {
             TokenKind::LParen => {
                 p.advance();
-                p.consume_newlines();
-                let mut args = Vec::new();
-                if !p.at(&TokenKind::RParen) {
-                    args.push(parse_expr(p)?);
-                    p.consume_newlines();
-                    while p.eat(&TokenKind::Comma) {
-                        p.consume_newlines();
-                        if p.at(&TokenKind::RParen) {
-                            break; // trailing comma
-                        }
-                        args.push(parse_expr(p)?);
-                        p.consume_newlines();
-                    }
-                }
+                let args =
+                    parse_comma_list(p, &TokenKind::RParen, EmptyHandling::Allow, parse_expr)?;
                 let end = p.peek().span;
                 p.expect(&TokenKind::RParen, "')'")?;
                 let span = Span::merge(expr.span, end);
@@ -242,20 +210,12 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
                     break;
                 };
                 p.advance();
-                p.consume_newlines();
-                let mut fields = Vec::new();
-                if !p.at(&TokenKind::RBrace) {
-                    fields.push(parse_struct_lit_field(p)?);
-                    p.consume_newlines();
-                    while p.eat(&TokenKind::Comma) {
-                        p.consume_newlines();
-                        if p.at(&TokenKind::RBrace) {
-                            break;
-                        }
-                        fields.push(parse_struct_lit_field(p)?);
-                        p.consume_newlines();
-                    }
-                }
+                let fields = parse_comma_list(
+                    p,
+                    &TokenKind::RBrace,
+                    EmptyHandling::Allow,
+                    parse_struct_lit_field,
+                )?;
                 let end = p.current_span();
                 p.expect(&TokenKind::RBrace, "'}'")?;
                 let span = Span::merge(expr.span, end);
@@ -283,20 +243,7 @@ fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError
 
 fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
     p.expect(&TokenKind::LBracket, "'['")?;
-    p.consume_newlines();
-    let mut row = Vec::new();
-    if !p.at(&TokenKind::RBracket) {
-        row.push(parse_expr(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RBracket) {
-                break; // trailing comma
-            }
-            row.push(parse_expr(p)?);
-            p.consume_newlines();
-        }
-    }
+    let row = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_expr)?;
     p.expect(&TokenKind::RBracket, "']'")?;
     Ok(row)
 }
@@ -384,24 +331,14 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
             let n = name.clone();
             let ident_span = p.advance().span;
             if p.eat(&TokenKind::LParen) {
-                p.consume_newlines();
-                if p.at(&TokenKind::RParen) {
-                    return Err(CompileError::parse(
-                        p.current_span(),
+                let payload = parse_comma_list(
+                    p,
+                    &TokenKind::RParen,
+                    EmptyHandling::Reject(
                         "empty payload list `()` is not allowed; use the variant name without parentheses",
-                    ));
-                }
-                let mut payload = Vec::new();
-                payload.push(parse_pattern(p)?);
-                p.consume_newlines();
-                while p.eat(&TokenKind::Comma) {
-                    p.consume_newlines();
-                    if p.at(&TokenKind::RParen) {
-                        break;
-                    }
-                    payload.push(parse_pattern(p)?);
-                    p.consume_newlines();
-                }
+                    ),
+                    parse_pattern,
+                )?;
                 let end = p.current_span();
                 p.expect(&TokenKind::RParen, "')'")?;
                 Ok(Pattern {
