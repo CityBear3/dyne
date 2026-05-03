@@ -1,7 +1,8 @@
 //! Statement and top-level item parser.
 
 use crate::ast::{
-    Block, ForStmt, FunctionDef, Item, LetStmt, Param, Program, Stmt, StmtKind, WhileStmt,
+    Block, EnumDef, EnumVariant, ForStmt, FunctionDef, Item, LetStmt, Param, Program, Stmt,
+    StmtKind, StructDef, StructField, WhileStmt,
 };
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
@@ -16,8 +17,16 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
     let mut items = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::Eof) {
         let item = parse_item(p)?;
+        if !matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after statement, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
         items.push(item);
-        require_stmt_terminator(p, &[])?;
         p.consume_newlines();
     }
     let end = p.current_span();
@@ -50,24 +59,26 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
     }
 }
 
-fn parse_struct_def(p: &mut Parser) -> Result<crate::ast::StructDef, CompileError> {
-    use crate::ast::{StructDef, StructField};
+fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Struct, "'struct'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected struct name")),
+        _ => {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "expected struct name",
+            ));
+        }
     };
     p.advance();
     p.consume_newlines();
     let mut fields = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Eof) {
         let field_start = p.current_span();
-        let fname_tok = p.peek().clone();
-        let fname = match &fname_tok.kind {
+        let fname = match p.peek_kind() {
             TokenKind::Ident(n) => n.clone(),
-            _ => return Err(CompileError::parse(fname_tok.span, "expected field name")),
+            _ => return Err(CompileError::parse(p.current_span(), "expected field name")),
         };
         p.advance();
         p.expect(&TokenKind::Colon, "':'")?;
@@ -102,14 +113,12 @@ fn parse_struct_def(p: &mut Parser) -> Result<crate::ast::StructDef, CompileErro
     })
 }
 
-fn parse_enum_def(p: &mut Parser) -> Result<crate::ast::EnumDef, CompileError> {
-    use crate::ast::EnumDef;
+fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Enum, "'enum'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected enum name")),
+        _ => return Err(CompileError::parse(p.current_span(), "expected enum name")),
     };
     p.advance();
     let type_params = crate::parser::types::parse_type_param_list(p)?;
@@ -142,36 +151,29 @@ fn parse_enum_def(p: &mut Parser) -> Result<crate::ast::EnumDef, CompileError> {
     })
 }
 
-fn parse_variant_decl(p: &mut Parser) -> Result<crate::ast::EnumVariant, CompileError> {
-    use crate::ast::EnumVariant;
+fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, CompileError> {
     let start = p.current_span();
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected variant name")),
+        _ => {
+            return Err(CompileError::parse(
+                p.current_span(),
+                "expected variant name",
+            ));
+        }
     };
-    let name_span = name_tok.span;
-    p.advance();
+    let name_span = p.advance().span;
     let mut payload = Vec::new();
     let mut end_span = name_span;
     if p.eat(&TokenKind::LParen) {
-        p.consume_newlines();
-        if p.at(&TokenKind::RParen) {
-            return Err(CompileError::parse(
-                p.current_span(),
+        payload = parse_comma_list(
+            p,
+            &TokenKind::RParen,
+            EmptyHandling::Reject(
                 "empty payload list `()` is not allowed; omit the parentheses for a no-payload variant",
-            ));
-        }
-        payload.push(crate::parser::types::parse_type(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RParen) {
-                break;
-            }
-            payload.push(crate::parser::types::parse_type(p)?);
-            p.consume_newlines();
-        }
+            ),
+            crate::parser::types::parse_type,
+        )?;
         // Capture span of `)` BEFORE consuming, so the variant span doesn't
         // overshoot into the following Newline / Comma / `end` / Eof.
         // Mirrors the call-args precedent in parse_postfix.
@@ -199,13 +201,12 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 fn parse_let_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Let, "'let'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => {
+        other => {
             return Err(CompileError::parse(
-                name_tok.span,
-                format!("expected identifier after 'let', found {:?}", name_tok.kind),
+                p.current_span(),
+                format!("expected identifier after 'let', found {other:?}"),
             ));
         }
     };
@@ -282,12 +283,11 @@ fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::For, "'for'")?;
-    let name_tok = p.peek().clone();
-    let first = match &name_tok.kind {
+    let first = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
             return Err(CompileError::parse(
-                name_tok.span,
+                p.current_span(),
                 "expected identifier after 'for'",
             ));
         }
@@ -316,12 +316,11 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 
     // Form: `for k, v in e do ... end`
     if p.eat(&TokenKind::Comma) {
-        let second_tok = p.peek().clone();
-        let second = match &second_tok.kind {
+        let second = match p.peek_kind() {
             TokenKind::Ident(n) => n.clone(),
             _ => {
                 return Err(CompileError::parse(
-                    second_tok.span,
+                    p.current_span(),
                     "expected identifier after ','",
                 ));
             }
@@ -364,29 +363,18 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
 fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Function, "'function'")?;
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(name_tok.span, "expected function name"));
+            return Err(CompileError::parse(
+                p.current_span(),
+                "expected function name",
+            ));
         }
     };
     p.advance();
     p.expect(&TokenKind::LParen, "'('")?;
-    p.consume_newlines();
-    let mut params = Vec::new();
-    if !p.at(&TokenKind::RParen) {
-        params.push(parse_param(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RParen) {
-                break; // trailing comma
-            }
-            params.push(parse_param(p)?);
-            p.consume_newlines();
-        }
-    }
+    let params = parse_comma_list(p, &TokenKind::RParen, EmptyHandling::Allow, parse_param)?;
     p.expect(&TokenKind::RParen, "')'")?;
     p.expect(&TokenKind::Colon, "':'")?;
     let return_ty = parse_type(p)?;
@@ -403,63 +391,124 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
 }
 
 fn parse_param(p: &mut Parser) -> Result<Param, CompileError> {
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
             return Err(CompileError::parse(
-                name_tok.span,
+                p.current_span(),
                 "expected parameter name",
             ));
         }
     };
-    p.advance();
+    let name_span = p.advance().span;
     p.expect(&TokenKind::Colon, "':'")?;
     let ty = parse_type(p)?;
-    let span = Span::merge(name_tok.span, ty.span);
+    let span = Span::merge(name_span, ty.span);
     Ok(Param { name, ty, span })
 }
 
-/// Parse a block that ends at any of: End, Else, Elseif.
+/// How `parse_comma_list` should treat an empty list (closing token immediately
+/// after the opening boundary).
+pub(crate) enum EmptyHandling {
+    /// Empty list is allowed; return `Vec::new()`.
+    Allow,
+    /// Empty list is rejected; emit `CompileError::parse` with this message.
+    Reject(&'static str),
+    /// Don't pre-check; let `parse_one` produce its own error if it fails.
+    /// Use when the original code did not have an explicit empty check.
+    RequireOne,
+}
+
+/// Parse a comma-separated list of items terminated by `close`, with optional
+/// newlines around items and an optional trailing comma. Caller is responsible
+/// for consuming the opening delimiter and the closing delimiter.
+pub(crate) fn parse_comma_list<T, F>(
+    p: &mut Parser,
+    close: &TokenKind,
+    empty: EmptyHandling,
+    mut parse_one: F,
+) -> Result<Vec<T>, CompileError>
+where
+    F: FnMut(&mut Parser) -> Result<T, CompileError>,
+{
+    p.consume_newlines();
+    if p.at(close) {
+        return match empty {
+            EmptyHandling::Allow => Ok(Vec::new()),
+            EmptyHandling::Reject(msg) => Err(CompileError::parse(p.current_span(), msg)),
+            EmptyHandling::RequireOne => {
+                // Call parse_one which will produce its own error
+                // (e.g. parse_type at `>` fails with "expected type name, found Gt").
+                Ok(vec![parse_one(p)?])
+            }
+        };
+    }
+    let mut items = vec![parse_one(p)?];
+    p.consume_newlines();
+    while p.eat(&TokenKind::Comma) {
+        p.consume_newlines();
+        if p.at(close) {
+            break;
+        }
+        items.push(parse_one(p)?);
+        p.consume_newlines();
+    }
+    Ok(items)
+}
+
+/// Parse a block body: leading newlines, then statements separated by
+/// Newline / Eof / a caller-supplied terminator predicate, until the
+/// terminator is at the parser's position.
+///
+/// The returned Block's span ends at the last consumed statement's span,
+/// not at the terminator. Callers compute their own outer span (incl.
+/// the terminating keyword) at the call site if needed.
+pub(crate) fn parse_block_body<F>(
+    p: &mut Parser,
+    is_terminator: F,
+    eof_msg: &'static str,
+    after_stmt_label: &'static str,
+) -> Result<Block, CompileError>
+where
+    F: Fn(&Parser) -> bool,
+{
+    let start = p.current_span();
+    p.consume_newlines();
+    let mut stmts = Vec::new();
+    let mut end_span = start;
+    while !is_terminator(p) {
+        if matches!(p.peek_kind(), TokenKind::Eof) {
+            return Err(CompileError::parse(p.current_span(), eof_msg));
+        }
+        let stmt = parse_stmt(p)?;
+        end_span = stmt.span;
+        stmts.push(stmt);
+        if !matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof) && !is_terminator(p) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!("{}, found {:?}", after_stmt_label, p.peek_kind()),
+            ));
+        }
+        p.consume_newlines();
+    }
+    Ok(Block {
+        stmts,
+        span: Span::merge(start, end_span),
+    })
+}
+
+/// Parse a block that ends at any of the supplied block terminators
+/// (End, Else, Elseif). Used by Stage 1 control-flow forms.
 pub(crate) fn parse_block_until(
     p: &mut Parser,
     terminators: &[TokenKindKind],
 ) -> Result<Block, CompileError> {
-    let start = p.current_span();
-    p.consume_newlines();
-    let mut stmts = Vec::new();
-    while !is_at_terminator(p, terminators) {
-        if matches!(p.peek_kind(), TokenKind::Eof) {
-            return Err(CompileError::parse(
-                p.current_span(),
-                "unexpected end of input inside block",
-            ));
-        }
-        let stmt = parse_stmt(p)?;
-        stmts.push(stmt);
-        require_stmt_terminator(p, terminators)?;
-        p.consume_newlines();
-    }
-    let end = p.current_span();
-    Ok(Block {
-        stmts,
-        span: Span::merge(start, end),
-    })
-}
-
-/// Require a statement boundary: Newline / Eof / a block terminator.
-/// Per Design Doc §6.6, statements must end with one of these.
-fn require_stmt_terminator(p: &Parser, terminators: &[TokenKindKind]) -> Result<(), CompileError> {
-    if matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof)
-        || is_at_terminator(p, terminators)
-    {
-        return Ok(());
-    }
-    let tok = p.peek();
-    Err(CompileError::parse(
-        tok.span,
-        format!("expected newline after statement, found {:?}", tok.kind),
-    ))
+    parse_block_body(
+        p,
+        |p| is_at_terminator(p, terminators),
+        "unexpected end of input inside block",
+        "expected newline after statement",
+    )
 }
 
 /// Discriminator enum for block terminators, to avoid needing full TokenKind equality.
@@ -868,5 +917,99 @@ mod tests {
         let mut p = Parser::new(&toks);
         let err = parse_program(&mut p).unwrap_err();
         assert!(err.message.contains("expected enum name"));
+    }
+
+    /// Pin: `<T, U>` type-parameter lists accept newlines around items and
+    /// trailing commas, as a side effect of using `parse_comma_list`. Anchors
+    /// the Stage 2 §5.1 multi-line / trailing-comma convention against
+    /// future stricter implementations of the helper.
+    #[test]
+    fn enum_def_type_params_accept_newlines() {
+        let toks = tokenize("enum Foo<\n  T,\n  U,\n>\n  V\nend").unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        assert_eq!(prog.items.len(), 1);
+        let crate::ast::Item::Enum(ref e) = prog.items[0] else {
+            panic!("expected Enum item");
+        };
+        assert_eq!(e.type_params, vec!["T".to_string(), "U".to_string()]);
+    }
+
+    /// Pin: function body `Block.span` does not overshoot into the closing
+    /// `end` keyword. Anchors the Task-4 fix (parse_block_body captures
+    /// end_span = stmt.span instead of p.current_span()).
+    #[test]
+    fn function_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  return 1\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let crate::ast::Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let body_text = &src[func.body.span.start..func.body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "function body span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Pin: `while` body `Block.span` does not overshoot into the closing
+    /// `end` keyword. Anchors the Task-4 fix.
+    #[test]
+    fn while_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  while true do\n    return 1\n  end\n  return 0\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let crate::ast::Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        // Find the While statement inside the function body.
+        let while_stmt = func
+            .body
+            .stmts
+            .iter()
+            .find(|s| matches!(s.kind, crate::ast::StmtKind::While(_)))
+            .expect("expected While stmt");
+        let crate::ast::StmtKind::While(ref ws) = while_stmt.kind else {
+            unreachable!()
+        };
+        let body_text = &src[ws.body.span.start..ws.body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "while body span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Pin: `if` then-branch `Block.span` does not overshoot into `else` or
+    /// `end`. Anchors the Task-4 fix.
+    #[test]
+    fn if_then_branch_span_does_not_include_else() {
+        let src =
+            "function f(): Int\n  if true then\n    return 1\n  else\n    return 2\n  end\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let crate::ast::Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        // First stmt in the body should be ExprStmt(If(...)).
+        let first_stmt = &func.body.stmts[0];
+        let crate::ast::StmtKind::Expr(ref e) = first_stmt.kind else {
+            panic!("expected ExprStmt");
+        };
+        let crate::ast::ExprKind::If(ref ifx) = e.kind else {
+            panic!("expected If expression");
+        };
+        let then_text = &src[ifx.then_block.span.start..ifx.then_block.span.end];
+        assert!(
+            !then_text.contains("else"),
+            "if then-branch span overshoots into 'else': {then_text:?}"
+        );
+        assert!(
+            !then_text.contains("end"),
+            "if then-branch span overshoots into 'end': {then_text:?}"
+        );
     }
 }

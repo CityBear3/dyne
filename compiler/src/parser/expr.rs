@@ -1,9 +1,12 @@
 //! Expression parser.
 
-use crate::ast::{BinOp, Expr, ExprKind, UnaryOp};
+use crate::ast::{BinOp, Block, Expr, ExprKind, IfExpr, MatchArm, Pattern, PatternKind, UnaryOp};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
+use crate::parser::stmt::{
+    EmptyHandling, TokenKindKind, parse_block_body, parse_block_until, parse_comma_list,
+};
 use crate::source::Span;
 
 pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
@@ -11,69 +14,73 @@ pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
-    let tok = p.peek().clone();
-    match &tok.kind {
+    match p.peek_kind() {
         TokenKind::Int(n) => {
-            p.advance();
+            let v = *n;
+            let span = p.advance().span;
             Ok(Expr {
-                kind: ExprKind::IntLit(*n),
-                span: tok.span,
+                kind: ExprKind::IntLit(v),
+                span,
             })
         }
         TokenKind::Float(n) => {
-            p.advance();
+            let v = *n;
+            let span = p.advance().span;
             Ok(Expr {
-                kind: ExprKind::FloatLit(*n),
-                span: tok.span,
+                kind: ExprKind::FloatLit(v),
+                span,
             })
         }
         TokenKind::Str(s) => {
             let s = s.clone();
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::StrLit(s),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::True => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::BoolLit(true),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::False => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::BoolLit(false),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Ident(name) => {
             let name = name.clone();
-            p.advance();
+            let span = p.advance().span;
             Ok(Expr {
                 kind: ExprKind::Ident(name),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::LParen => {
-            p.advance();
+            let start = p.advance().span;
             let inner = parse_expr(p)?;
             let end = p.peek().span;
             p.expect(&TokenKind::RParen, "')'")?;
             Ok(Expr {
                 kind: inner.kind,
-                span: Span::merge(tok.span, end),
+                span: Span::merge(start, end),
             })
         }
         TokenKind::LBracket => parse_vec_or_mat_lit(p),
         TokenKind::If => parse_if_expr(p),
         TokenKind::Match => parse_match_expr(p),
-        _ => Err(CompileError::parse(
-            tok.span,
-            format!("expected expression, found {:?}", tok.kind),
-        )),
+        other => {
+            let span = p.current_span();
+            Err(CompileError::parse(
+                span,
+                format!("expected expression, found {other:?}"),
+            ))
+        }
     }
 }
 
@@ -83,17 +90,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     p.consume_newlines();
     // Matrix if first element is '['
     if p.at(&TokenKind::LBracket) {
-        let mut rows = Vec::new();
-        rows.push(parse_row(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RBracket) {
-                break; // trailing comma
-            }
-            rows.push(parse_row(p)?);
-            p.consume_newlines();
-        }
+        let rows = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_row)?;
         let end = p.peek().span;
         p.expect(&TokenKind::RBracket, "']'")?;
         return Ok(Expr {
@@ -102,19 +99,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
         });
     }
     // Vector literal (possibly empty)
-    let mut elems = Vec::new();
-    if !p.at(&TokenKind::RBracket) {
-        elems.push(parse_expr(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RBracket) {
-                break; // trailing comma
-            }
-            elems.push(parse_expr(p)?);
-            p.consume_newlines();
-        }
-    }
+    let elems = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_expr)?;
     let end = p.peek().span;
     p.expect(&TokenKind::RBracket, "']'")?;
     Ok(Expr {
@@ -124,9 +109,6 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
-    use crate::ast::IfExpr;
-    use crate::parser::stmt::{TokenKindKind, parse_block_until};
-
     let start = p.current_span();
     p.expect(&TokenKind::If, "'if'")?;
     let cond = parse_expr(p)?;
@@ -182,20 +164,8 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
         match p.peek_kind() {
             TokenKind::LParen => {
                 p.advance();
-                p.consume_newlines();
-                let mut args = Vec::new();
-                if !p.at(&TokenKind::RParen) {
-                    args.push(parse_expr(p)?);
-                    p.consume_newlines();
-                    while p.eat(&TokenKind::Comma) {
-                        p.consume_newlines();
-                        if p.at(&TokenKind::RParen) {
-                            break; // trailing comma
-                        }
-                        args.push(parse_expr(p)?);
-                        p.consume_newlines();
-                    }
-                }
+                let args =
+                    parse_comma_list(p, &TokenKind::RParen, EmptyHandling::Allow, parse_expr)?;
                 let end = p.peek().span;
                 p.expect(&TokenKind::RParen, "')'")?;
                 let span = Span::merge(expr.span, end);
@@ -217,18 +187,17 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
             }
             TokenKind::Dot => {
                 p.advance();
-                let field_tok = p.peek().clone();
-                let field = match &field_tok.kind {
+                let field = match p.peek_kind() {
                     TokenKind::Ident(n) => n.clone(),
-                    _ => {
+                    other => {
                         return Err(CompileError::parse(
-                            field_tok.span,
-                            format!("expected field name, found {:?}", field_tok.kind),
+                            p.current_span(),
+                            format!("expected field name, found {other:?}"),
                         ));
                     }
                 };
-                p.advance();
-                let span = Span::merge(expr.span, field_tok.span);
+                let field_span = p.advance().span;
+                let span = Span::merge(expr.span, field_span);
                 expr = Expr {
                     kind: ExprKind::FieldAccess(Box::new(expr), field),
                     span,
@@ -241,20 +210,12 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
                     break;
                 };
                 p.advance();
-                p.consume_newlines();
-                let mut fields = Vec::new();
-                if !p.at(&TokenKind::RBrace) {
-                    fields.push(parse_struct_lit_field(p)?);
-                    p.consume_newlines();
-                    while p.eat(&TokenKind::Comma) {
-                        p.consume_newlines();
-                        if p.at(&TokenKind::RBrace) {
-                            break;
-                        }
-                        fields.push(parse_struct_lit_field(p)?);
-                        p.consume_newlines();
-                    }
-                }
+                let fields = parse_comma_list(
+                    p,
+                    &TokenKind::RBrace,
+                    EmptyHandling::Allow,
+                    parse_struct_lit_field,
+                )?;
                 let end = p.current_span();
                 p.expect(&TokenKind::RBrace, "'}'")?;
                 let span = Span::merge(expr.span, end);
@@ -270,10 +231,9 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError> {
-    let name_tok = p.peek().clone();
-    let name = match &name_tok.kind {
+    let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(name_tok.span, "expected field name")),
+        _ => return Err(CompileError::parse(p.current_span(), "expected field name")),
     };
     p.advance();
     p.expect(&TokenKind::Colon, "':'")?;
@@ -283,20 +243,7 @@ fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError
 
 fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
     p.expect(&TokenKind::LBracket, "'['")?;
-    p.consume_newlines();
-    let mut row = Vec::new();
-    if !p.at(&TokenKind::RBracket) {
-        row.push(parse_expr(p)?);
-        p.consume_newlines();
-        while p.eat(&TokenKind::Comma) {
-            p.consume_newlines();
-            if p.at(&TokenKind::RBracket) {
-                break; // trailing comma
-            }
-            row.push(parse_expr(p)?);
-            p.consume_newlines();
-        }
-    }
+    let row = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_expr)?;
     p.expect(&TokenKind::RBracket, "']'")?;
     Ok(row)
 }
@@ -368,43 +315,30 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
     })
 }
 
-use crate::ast::{Pattern, PatternKind};
-
 const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are rejected: IEEE 754 equality is unreliable (NaN \u{2260} NaN, rounding error). Only Int / Bool / String literal patterns are supported in `case` arms.";
 
 pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
     let start = p.current_span();
-    let tok = p.peek().clone();
-    match &tok.kind {
+    match p.peek_kind() {
         TokenKind::Ident(name) if name == "_" => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::Wildcard,
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Ident(name) => {
             let n = name.clone();
-            p.advance();
+            let ident_span = p.advance().span;
             if p.eat(&TokenKind::LParen) {
-                p.consume_newlines();
-                if p.at(&TokenKind::RParen) {
-                    return Err(CompileError::parse(
-                        p.current_span(),
+                let payload = parse_comma_list(
+                    p,
+                    &TokenKind::RParen,
+                    EmptyHandling::Reject(
                         "empty payload list `()` is not allowed; use the variant name without parentheses",
-                    ));
-                }
-                let mut payload = Vec::new();
-                payload.push(parse_pattern(p)?);
-                p.consume_newlines();
-                while p.eat(&TokenKind::Comma) {
-                    p.consume_newlines();
-                    if p.at(&TokenKind::RParen) {
-                        break;
-                    }
-                    payload.push(parse_pattern(p)?);
-                    p.consume_newlines();
-                }
+                    ),
+                    parse_pattern,
+                )?;
                 let end = p.current_span();
                 p.expect(&TokenKind::RParen, "')'")?;
                 Ok(Pattern {
@@ -414,74 +348,79 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
             } else {
                 Ok(Pattern {
                     kind: PatternKind::Ident(n),
-                    span: tok.span,
+                    span: ident_span,
                 })
             }
         }
         TokenKind::Int(n) => {
             let v = *n;
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::IntLit(v),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Minus => {
             p.advance();
-            let next = p.peek().clone();
-            match next.kind {
+            match p.peek_kind() {
                 TokenKind::Int(n) => {
-                    p.advance();
+                    let v = *n;
+                    let int_span = p.advance().span;
                     Ok(Pattern {
-                        kind: PatternKind::IntLit(-n),
-                        span: Span::merge(tok.span, next.span),
+                        kind: PatternKind::IntLit(-v),
+                        span: Span::merge(start, int_span),
                     })
                 }
-                TokenKind::Float(_) => Err(CompileError::parse(
-                    Span::merge(tok.span, next.span),
-                    FLOAT_PATTERN_REJECTED,
-                )),
-                _ => Err(CompileError::parse(
-                    next.span,
-                    format!(
-                        "expected integer literal after '-' in pattern, found {:?}",
-                        next.kind
-                    ),
-                )),
+                TokenKind::Float(_) => {
+                    let float_span = p.current_span();
+                    Err(CompileError::parse(
+                        Span::merge(start, float_span),
+                        FLOAT_PATTERN_REJECTED,
+                    ))
+                }
+                other => {
+                    let span = p.current_span();
+                    Err(CompileError::parse(
+                        span,
+                        format!("expected integer literal after '-' in pattern, found {other:?}"),
+                    ))
+                }
             }
         }
-        TokenKind::Float(_) => Err(CompileError::parse(tok.span, FLOAT_PATTERN_REJECTED)),
+        TokenKind::Float(_) => Err(CompileError::parse(start, FLOAT_PATTERN_REJECTED)),
         TokenKind::True => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::BoolLit(true),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::False => {
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::BoolLit(false),
-                span: tok.span,
+                span,
             })
         }
         TokenKind::Str(s) => {
             let s = s.clone();
-            p.advance();
+            let span = p.advance().span;
             Ok(Pattern {
                 kind: PatternKind::StrLit(s),
-                span: tok.span,
+                span,
             })
         }
-        _ => Err(CompileError::parse(
-            tok.span,
-            format!("expected pattern, found {:?}", tok.kind),
-        )),
+        other => {
+            let span = p.current_span();
+            Err(CompileError::parse(
+                span,
+                format!("expected pattern, found {other:?}"),
+            ))
+        }
     }
 }
 
 fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
-    use crate::ast::MatchArm;
     let start = p.current_span();
     p.expect(&TokenKind::Match, "'match'")?;
     let scrutinee = parse_expr(p)?;
@@ -525,41 +464,13 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     })
 }
 
-fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileError> {
-    use crate::ast::Block;
-    use crate::parser::stmt::parse_stmt;
-    let start = p.current_span();
-    p.consume_newlines();
-    let mut stmts = Vec::new();
-    let mut end_span = start;
-    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Case) {
-        if matches!(p.peek_kind(), TokenKind::Eof) {
-            return Err(CompileError::parse(
-                p.current_span(),
-                "unexpected end of input inside match arm body",
-            ));
-        }
-        let stmt = parse_stmt(p)?;
-        end_span = stmt.span;
-        stmts.push(stmt);
-        if !matches!(
-            p.peek_kind(),
-            TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Case
-        ) {
-            return Err(CompileError::parse(
-                p.current_span(),
-                format!(
-                    "expected newline after match arm statement, found {:?}",
-                    p.peek_kind()
-                ),
-            ));
-        }
-        p.consume_newlines();
-    }
-    Ok(Block {
-        stmts,
-        span: Span::merge(start, end_span),
-    })
+fn parse_match_arm_body(p: &mut Parser) -> Result<Block, CompileError> {
+    parse_block_body(
+        p,
+        |p| matches!(p.peek_kind(), TokenKind::End | TokenKind::Case),
+        "unexpected end of input inside match arm body",
+        "expected newline after match arm statement",
+    )
 }
 
 #[cfg(test)]

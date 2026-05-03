@@ -4,6 +4,7 @@ use crate::ast::{Type, TypeArg, TypeKind, UnitExpr, UnitExprKind};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
+use crate::parser::stmt::{EmptyHandling, parse_comma_list};
 use crate::source::Span;
 
 pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
@@ -15,13 +16,7 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     {
         p.advance();
         p.expect(&TokenKind::LParen, "'('")?;
-        let mut params = Vec::new();
-        if !p.at(&TokenKind::RParen) {
-            params.push(parse_type(p)?);
-            while p.eat(&TokenKind::Comma) {
-                params.push(parse_type(p)?);
-            }
-        }
+        let params = parse_comma_list(p, &TokenKind::RParen, EmptyHandling::Allow, parse_type)?;
         p.expect(&TokenKind::RParen, "')'")?;
         p.expect(&TokenKind::Arrow, "'->'")?;
         let ret = parse_type(p)?;
@@ -33,33 +28,29 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     }
 
     // Named or Generic
-    let ident_tok = p.peek().clone();
-    let name = if let TokenKind::Ident(n) = &ident_tok.kind {
-        n.clone()
-    } else {
-        return Err(CompileError::parse(
-            ident_tok.span,
-            format!("expected type name, found {:?}", ident_tok.kind),
-        ));
+    let name = match p.peek_kind() {
+        TokenKind::Ident(n) => n.clone(),
+        other => {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!("expected type name, found {other:?}"),
+            ));
+        }
     };
-    p.advance();
+    let ident_span = p.advance().span;
 
     if p.eat(&TokenKind::Lt) {
-        let mut args = Vec::new();
-        args.push(parse_type_arg(p)?);
-        while p.eat(&TokenKind::Comma) {
-            args.push(parse_type_arg(p)?);
-        }
-        let end_tok = p.peek().clone();
+        let args = parse_comma_list(p, &TokenKind::Gt, EmptyHandling::RequireOne, parse_type_arg)?;
+        let end_span = p.current_span();
         p.expect(&TokenKind::Gt, "'>'")?;
         Ok(Type {
             kind: TypeKind::Generic(name, args),
-            span: Span::merge(ident_tok.span, end_tok.span),
+            span: Span::merge(ident_span, end_span),
         })
     } else {
         Ok(Type {
             kind: TypeKind::Named(name),
-            span: ident_tok.span,
+            span: ident_span,
         })
     }
 }
@@ -68,30 +59,27 @@ pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, Compi
     if !p.eat(&TokenKind::Lt) {
         return Ok(Vec::new());
     }
-    if p.at(&TokenKind::Gt) {
-        return Err(CompileError::parse(
-            p.current_span(),
+    let params = parse_comma_list(
+        p,
+        &TokenKind::Gt,
+        EmptyHandling::Reject(
             "empty type parameter list `<>` is not allowed; omit the brackets entirely",
-        ));
-    }
-    let mut params = Vec::new();
-    params.push(parse_type_param_name(p)?);
-    while p.eat(&TokenKind::Comma) {
-        params.push(parse_type_param_name(p)?);
-    }
+        ),
+        parse_type_param_name,
+    )?;
     p.expect(&TokenKind::Gt, "'>'")?;
     Ok(params)
 }
 
 fn parse_type_param_name(p: &mut Parser) -> Result<String, CompileError> {
-    let tok = p.peek().clone();
-    match &tok.kind {
+    match p.peek_kind() {
         TokenKind::Ident(n) => {
+            let n = n.clone();
             p.advance();
-            Ok(n.clone())
+            Ok(n)
         }
         _ => Err(CompileError::parse(
-            tok.span,
+            p.current_span(),
             "expected type parameter name",
         )),
     }
@@ -153,34 +141,32 @@ fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, CompileError> {
 }
 
 fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, CompileError> {
-    let tok = p.peek().clone();
-    let atom = match &tok.kind {
+    let atom = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => {
+        other => {
             return Err(CompileError::parse(
-                tok.span,
-                format!("expected unit atom, found {:?}", tok.kind),
+                p.current_span(),
+                format!("expected unit atom, found {other:?}"),
             ));
         }
     };
-    p.advance();
+    let atom_span = p.advance().span;
     let mut expr = UnitExpr {
         kind: UnitExprKind::Atom(atom),
-        span: tok.span,
+        span: atom_span,
     };
     if p.eat(&TokenKind::Caret) {
-        let exp_tok = p.peek().clone();
-        let n = match &exp_tok.kind {
+        let n = match p.peek_kind() {
             TokenKind::Int(n) => *n,
-            _ => {
+            other => {
                 return Err(CompileError::parse(
-                    exp_tok.span,
-                    format!("expected integer exponent, found {:?}", exp_tok.kind),
+                    p.current_span(),
+                    format!("expected integer exponent, found {other:?}"),
                 ));
             }
         };
-        p.advance();
-        let span = Span::merge(expr.span, exp_tok.span);
+        let exp_span = p.advance().span;
+        let span = Span::merge(expr.span, exp_span);
         expr = UnitExpr {
             kind: UnitExprKind::Pow(Box::new(expr), n),
             span,
@@ -272,6 +258,21 @@ mod tests {
     #[test]
     fn function_type() {
         let t = parse("Fn(Scalar, Scalar) -> Scalar");
+        if let TypeKind::Function(params, ret) = t.kind {
+            assert_eq!(params.len(), 2);
+            assert!(matches!(ret.kind, TypeKind::Named(ref n) if n == "Scalar"));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    /// Pin: `Fn(...)` parameter lists accept newlines around items and
+    /// trailing commas, as a side effect of using `parse_comma_list`. Anchors
+    /// the Stage 2 §5.1 multi-line / trailing-comma convention against
+    /// future stricter implementations of the helper.
+    #[test]
+    fn fn_type_params_accept_newlines_around_items() {
+        let t = parse("Fn(\n  Scalar,\n  Scalar,\n) -> Scalar");
         if let TypeKind::Function(params, ret) = t.kind {
             assert_eq!(params.len(), 2);
             assert!(matches!(ret.kind, TypeKind::Named(ref n) if n == "Scalar"));
