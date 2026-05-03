@@ -1,9 +1,10 @@
 //! Expression parser.
 
-use crate::ast::{BinOp, Expr, ExprKind, UnaryOp};
+use crate::ast::{BinOp, Block, Expr, ExprKind, IfExpr, MatchArm, Pattern, PatternKind, UnaryOp};
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
+use crate::parser::stmt::{TokenKindKind, parse_block_until, parse_stmt};
 use crate::source::Span;
 
 pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
@@ -124,9 +125,6 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
-    use crate::ast::IfExpr;
-    use crate::parser::stmt::{TokenKindKind, parse_block_until};
-
     let start = p.current_span();
     p.expect(&TokenKind::If, "'if'")?;
     let cond = parse_expr(p)?;
@@ -368,8 +366,6 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
     })
 }
 
-use crate::ast::{Pattern, PatternKind};
-
 const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are rejected: IEEE 754 equality is unreliable (NaN \u{2260} NaN, rounding error). Only Int / Bool / String literal patterns are supported in `case` arms.";
 
 pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
@@ -481,7 +477,6 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
 }
 
 fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
-    use crate::ast::MatchArm;
     let start = p.current_span();
     p.expect(&TokenKind::Match, "'match'")?;
     let scrutinee = parse_expr(p)?;
@@ -525,9 +520,7 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     })
 }
 
-fn parse_match_arm_body(p: &mut Parser) -> Result<crate::ast::Block, CompileError> {
-    use crate::ast::Block;
-    use crate::parser::stmt::parse_stmt;
+fn parse_match_arm_body(p: &mut Parser) -> Result<Block, CompileError> {
     let start = p.current_span();
     p.consume_newlines();
     let mut stmts = Vec::new();

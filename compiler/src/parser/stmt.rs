@@ -1,7 +1,8 @@
 //! Statement and top-level item parser.
 
 use crate::ast::{
-    Block, ForStmt, FunctionDef, Item, LetStmt, Param, Program, Stmt, StmtKind, WhileStmt,
+    Block, EnumDef, EnumVariant, ForStmt, FunctionDef, Item, LetStmt, Param, Program, Stmt,
+    StmtKind, StructDef, StructField, WhileStmt,
 };
 use crate::error::CompileError;
 use crate::lexer::TokenKind;
@@ -50,8 +51,7 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
     }
 }
 
-fn parse_struct_def(p: &mut Parser) -> Result<crate::ast::StructDef, CompileError> {
-    use crate::ast::{StructDef, StructField};
+fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Struct, "'struct'")?;
     let name_tok = p.peek().clone();
@@ -102,8 +102,7 @@ fn parse_struct_def(p: &mut Parser) -> Result<crate::ast::StructDef, CompileErro
     })
 }
 
-fn parse_enum_def(p: &mut Parser) -> Result<crate::ast::EnumDef, CompileError> {
-    use crate::ast::EnumDef;
+fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
     let start = p.current_span();
     p.expect(&TokenKind::Enum, "'enum'")?;
     let name_tok = p.peek().clone();
@@ -142,8 +141,7 @@ fn parse_enum_def(p: &mut Parser) -> Result<crate::ast::EnumDef, CompileError> {
     })
 }
 
-fn parse_variant_decl(p: &mut Parser) -> Result<crate::ast::EnumVariant, CompileError> {
-    use crate::ast::EnumVariant;
+fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, CompileError> {
     let start = p.current_span();
     let name_tok = p.peek().clone();
     let name = match &name_tok.kind {
