@@ -17,8 +17,16 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
     let mut items = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::Eof) {
         let item = parse_item(p)?;
+        if !matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!(
+                    "expected newline after statement, found {:?}",
+                    p.peek_kind()
+                ),
+            ));
+        }
         items.push(item);
-        require_stmt_terminator(p, &[])?;
         p.consume_newlines();
     }
     let end = p.current_span();
@@ -448,46 +456,59 @@ where
     Ok(items)
 }
 
-/// Parse a block that ends at any of: End, Else, Elseif.
+/// Parse a block body: leading newlines, then statements separated by
+/// Newline / Eof / a caller-supplied terminator predicate, until the
+/// terminator is at the parser's position.
+///
+/// The returned Block's span ends at the last consumed statement's span,
+/// not at the terminator. Callers compute their own outer span (incl.
+/// the terminating keyword) at the call site if needed.
+pub(crate) fn parse_block_body<F>(
+    p: &mut Parser,
+    is_terminator: F,
+    eof_msg: &'static str,
+    after_stmt_label: &'static str,
+) -> Result<Block, CompileError>
+where
+    F: Fn(&Parser) -> bool,
+{
+    let start = p.current_span();
+    p.consume_newlines();
+    let mut stmts = Vec::new();
+    let mut end_span = start;
+    while !is_terminator(p) {
+        if matches!(p.peek_kind(), TokenKind::Eof) {
+            return Err(CompileError::parse(p.current_span(), eof_msg));
+        }
+        let stmt = parse_stmt(p)?;
+        end_span = stmt.span;
+        stmts.push(stmt);
+        if !matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof) && !is_terminator(p) {
+            return Err(CompileError::parse(
+                p.current_span(),
+                format!("{}, found {:?}", after_stmt_label, p.peek_kind()),
+            ));
+        }
+        p.consume_newlines();
+    }
+    Ok(Block {
+        stmts,
+        span: Span::merge(start, end_span),
+    })
+}
+
+/// Parse a block that ends at any of the supplied block terminators
+/// (End, Else, Elseif). Used by Stage 1 control-flow forms.
 pub(crate) fn parse_block_until(
     p: &mut Parser,
     terminators: &[TokenKindKind],
 ) -> Result<Block, CompileError> {
-    let start = p.current_span();
-    p.consume_newlines();
-    let mut stmts = Vec::new();
-    while !is_at_terminator(p, terminators) {
-        if matches!(p.peek_kind(), TokenKind::Eof) {
-            return Err(CompileError::parse(
-                p.current_span(),
-                "unexpected end of input inside block",
-            ));
-        }
-        let stmt = parse_stmt(p)?;
-        stmts.push(stmt);
-        require_stmt_terminator(p, terminators)?;
-        p.consume_newlines();
-    }
-    let end = p.current_span();
-    Ok(Block {
-        stmts,
-        span: Span::merge(start, end),
-    })
-}
-
-/// Require a statement boundary: Newline / Eof / a block terminator.
-/// Per Design Doc §6.6, statements must end with one of these.
-fn require_stmt_terminator(p: &Parser, terminators: &[TokenKindKind]) -> Result<(), CompileError> {
-    if matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof)
-        || is_at_terminator(p, terminators)
-    {
-        return Ok(());
-    }
-    let tok = p.peek();
-    Err(CompileError::parse(
-        tok.span,
-        format!("expected newline after statement, found {:?}", tok.kind),
-    ))
+    parse_block_body(
+        p,
+        |p| is_at_terminator(p, terminators),
+        "unexpected end of input inside block",
+        "expected newline after statement",
+    )
 }
 
 /// Discriminator enum for block terminators, to avoid needing full TokenKind equality.

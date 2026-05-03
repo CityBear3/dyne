@@ -5,7 +5,7 @@ use crate::error::CompileError;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::parser::stmt::{
-    EmptyHandling, TokenKindKind, parse_block_until, parse_comma_list, parse_stmt,
+    EmptyHandling, TokenKindKind, parse_block_body, parse_block_until, parse_comma_list,
 };
 use crate::source::Span;
 
@@ -465,38 +465,12 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
 }
 
 fn parse_match_arm_body(p: &mut Parser) -> Result<Block, CompileError> {
-    let start = p.current_span();
-    p.consume_newlines();
-    let mut stmts = Vec::new();
-    let mut end_span = start;
-    while !matches!(p.peek_kind(), TokenKind::End | TokenKind::Case) {
-        if matches!(p.peek_kind(), TokenKind::Eof) {
-            return Err(CompileError::parse(
-                p.current_span(),
-                "unexpected end of input inside match arm body",
-            ));
-        }
-        let stmt = parse_stmt(p)?;
-        end_span = stmt.span;
-        stmts.push(stmt);
-        if !matches!(
-            p.peek_kind(),
-            TokenKind::Newline | TokenKind::Eof | TokenKind::End | TokenKind::Case
-        ) {
-            return Err(CompileError::parse(
-                p.current_span(),
-                format!(
-                    "expected newline after match arm statement, found {:?}",
-                    p.peek_kind()
-                ),
-            ));
-        }
-        p.consume_newlines();
-    }
-    Ok(Block {
-        stmts,
-        span: Span::merge(start, end_span),
-    })
+    parse_block_body(
+        p,
+        |p| matches!(p.peek_kind(), TokenKind::End | TokenKind::Case),
+        "unexpected end of input inside match arm body",
+        "expected newline after match arm statement",
+    )
 }
 
 #[cfg(test)]
