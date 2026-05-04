@@ -1012,4 +1012,156 @@ mod tests {
             "if then-branch span overshoots into 'end': {then_text:?}"
         );
     }
+
+    /// Anchors the Task-4 fix: `IfExpr.else_block.span` ends at the last
+    /// consumed statement in the else branch, not at the closing `end`.
+    #[test]
+    fn if_else_branch_span_does_not_include_end() {
+        let src =
+            "function f(): Int\n  if true then\n    return 1\n  else\n    return 2\n  end\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let StmtKind::Expr(ref e) = func.body.stmts[0].kind else {
+            panic!("expected ExprStmt");
+        };
+        let ExprKind::If(ref ifx) = e.kind else {
+            panic!("expected If expression");
+        };
+        let else_block = ifx
+            .else_block
+            .as_ref()
+            .expect("expected else block in fixture");
+        let body_text = &src[else_block.span.start..else_block.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "if else-branch span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Anchors the Task-4 fix: `IfExpr.elseifs[i].1.span` (the elseif block)
+    /// ends at the last consumed statement, not at the next `elseif` / `else`
+    /// / `end`.
+    #[test]
+    fn if_elseif_branch_span_does_not_include_next_keyword() {
+        let src = "function f(): Int\n  if false then\n    return 0\n  elseif true then\n    return 1\n  else\n    return 2\n  end\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let StmtKind::Expr(ref e) = func.body.stmts[0].kind else {
+            panic!("expected ExprStmt");
+        };
+        let ExprKind::If(ref ifx) = e.kind else {
+            panic!("expected If expression");
+        };
+        let (_cond, elseif_block) = ifx
+            .elseifs
+            .first()
+            .expect("expected at least one elseif in fixture");
+        let body_text = &src[elseif_block.span.start..elseif_block.span.end];
+        assert!(
+            !body_text.contains("else"),
+            "if elseif-branch span overshoots into 'else'/'elseif': {body_text:?}"
+        );
+        assert!(
+            !body_text.contains("end"),
+            "if elseif-branch span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Anchors the Task-4 fix: `ForStmt::Range.body.span` ends at the last
+    /// consumed statement, not at the closing `end`.
+    #[test]
+    fn for_range_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  for i = 0, 10 do\n    return i\n  end\n  return 0\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let for_stmt = func
+            .body
+            .stmts
+            .iter()
+            .find(|s| matches!(s.kind, StmtKind::For(_)))
+            .expect("expected For stmt");
+        let StmtKind::For(ref fs) = for_stmt.kind else {
+            unreachable!()
+        };
+        let ForStmt::Range { ref body, .. } = *fs else {
+            panic!("expected ForStmt::Range");
+        };
+        let body_text = &src[body.span.start..body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "for-Range body span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Anchors the Task-4 fix: `ForStmt::Iter.body.span` ends at the last
+    /// consumed statement, not at the closing `end`.
+    #[test]
+    fn for_iter_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  for x in xs do\n    return x\n  end\n  return 0\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let for_stmt = func
+            .body
+            .stmts
+            .iter()
+            .find(|s| matches!(s.kind, StmtKind::For(_)))
+            .expect("expected For stmt");
+        let StmtKind::For(ref fs) = for_stmt.kind else {
+            unreachable!()
+        };
+        let ForStmt::Iter { ref body, .. } = *fs else {
+            panic!("expected ForStmt::Iter");
+        };
+        let body_text = &src[body.span.start..body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "for-Iter body span overshoots into 'end': {body_text:?}"
+        );
+    }
+
+    /// Anchors the Task-4 fix: `ForStmt::IterKV.body.span` ends at the last
+    /// consumed statement, not at the closing `end`.
+    #[test]
+    fn for_iterkv_body_span_does_not_include_end() {
+        let src = "function f(): Int\n  for k, v in m do\n    return v\n  end\n  return 0\nend\n";
+        let toks = tokenize(src).unwrap();
+        let mut p = Parser::new(&toks);
+        let prog = parse_program(&mut p).unwrap();
+        let Item::Function(ref func) = prog.items[0] else {
+            panic!("expected Function");
+        };
+        let for_stmt = func
+            .body
+            .stmts
+            .iter()
+            .find(|s| matches!(s.kind, StmtKind::For(_)))
+            .expect("expected For stmt");
+        let StmtKind::For(ref fs) = for_stmt.kind else {
+            unreachable!()
+        };
+        let ForStmt::IterKV { ref body, .. } = *fs else {
+            panic!("expected ForStmt::IterKV");
+        };
+        let body_text = &src[body.span.start..body.span.end];
+        assert!(
+            !body_text.contains("end"),
+            "for-IterKV body span overshoots into 'end': {body_text:?}"
+        );
+    }
 }
