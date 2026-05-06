@@ -184,7 +184,7 @@ fn resolve_function(r: &mut Resolver, f: &FunctionDef) {
     for p in &f.params {
         r.define_or_report(p.name.clone(), DefKind::Param, p.span);
     }
-    resolve_block_no_scope(r, &f.body);
+    resolve_stmts(r, &f.body.stmts);
     r.table.exit_scope();
 }
 
@@ -196,11 +196,12 @@ fn resolve_block(r: &mut Resolver, b: &Block) {
     r.table.exit_scope();
 }
 
-/// Walk a block's statements without pushing a new scope. Used when the
-/// caller already pushed a scope (function body shares its scope with the
-/// param list; for-loop body shares the loop-var scope).
-fn resolve_block_no_scope(r: &mut Resolver, b: &Block) {
-    for stmt in &b.stmts {
+/// Walk a slice of statements without pushing a new scope. Used when the
+/// caller already manages the surrounding scope (function body shares its
+/// scope with the param list; for-loop body shares the loop-var scope;
+/// match-arm body shares the pattern-binding scope).
+fn resolve_stmts(r: &mut Resolver, stmts: &[Stmt]) {
+    for stmt in stmts {
         resolve_stmt(r, stmt);
     }
 }
@@ -240,14 +241,14 @@ fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
             resolve_expr(r, end);
             r.table.enter_scope();
             r.define_or_report(var.clone(), DefKind::LoopVar, outer_span);
-            resolve_block_no_scope(r, body);
+            resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
         ForStmt::Iter { var, iter, body } => {
             resolve_expr(r, iter);
             r.table.enter_scope();
             r.define_or_report(var.clone(), DefKind::LoopVar, outer_span);
-            resolve_block_no_scope(r, body);
+            resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
         ForStmt::IterKV {
@@ -260,7 +261,7 @@ fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
             r.table.enter_scope();
             r.define_or_report(key.clone(), DefKind::LoopVar, outer_span);
             r.define_or_report(value.clone(), DefKind::LoopVar, outer_span);
-            resolve_block_no_scope(r, body);
+            resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
     }
@@ -339,7 +340,7 @@ fn resolve_lambda(r: &mut Resolver, l: &LambdaExpr) {
     }
     match &l.body {
         LambdaBody::Expr(e) => resolve_expr(r, e),
-        LambdaBody::Block(b) => resolve_block_no_scope(r, b),
+        LambdaBody::Block(b) => resolve_stmts(r, &b.stmts),
     }
     r.table.exit_scope();
 }
@@ -359,7 +360,7 @@ fn resolve_if(r: &mut Resolver, i: &IfExpr) {
 fn resolve_match_arm(r: &mut Resolver, arm: &MatchArm) {
     r.table.enter_scope();
     bind_pattern(r, &arm.pattern);
-    resolve_block_no_scope(r, &arm.body);
+    resolve_stmts(r, &arm.body.stmts);
     r.table.exit_scope();
 }
 
@@ -545,6 +546,22 @@ mod tests {
         let prog = parse_src(src);
         let (_resolutions, _defs, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_for_loop_var_collides_with_let_in_body() {
+        let src =
+            "function f(): Int\n  for i = 0, 10 do\n    let i: Int = 5\n  end\n  return 0\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one duplicate-name diag, got {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("`i`"));
+        assert!(diags[0].message.contains("already defined"));
     }
 
     #[test]
