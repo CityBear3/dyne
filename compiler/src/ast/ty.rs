@@ -1,11 +1,13 @@
 //! Type AST nodes.
 
+use crate::ids::NodeId;
 use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Type {
     pub kind: TypeKind,
     pub span: Span,
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +28,7 @@ pub enum TypeArg {
 pub struct UnitExpr {
     pub kind: UnitExprKind,
     pub span: Span,
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +48,7 @@ mod tests {
         let t = Type {
             kind: TypeKind::Named("Scalar".into()),
             span: Span::new(0, 6),
+            id: NodeId(0),
         };
         assert!(matches!(t.kind, TypeKind::Named(ref n) if n == "Scalar"));
     }
@@ -54,6 +58,7 @@ mod tests {
         let t = Type {
             kind: TypeKind::Generic("Vec".into(), vec![TypeArg::Int(3)]),
             span: Span::new(0, 6),
+            id: NodeId(0),
         };
         if let TypeKind::Generic(name, args) = &t.kind {
             assert_eq!(name, "Vec");
@@ -67,10 +72,12 @@ mod tests {
         let unit = UnitExpr {
             kind: UnitExprKind::Atom("kg".into()),
             span: Span::new(7, 9),
+            id: NodeId(0),
         };
         let t = Type {
             kind: TypeKind::Generic("Scalar".into(), vec![TypeArg::Unit(unit)]),
             span: Span::new(0, 10),
+            id: NodeId(0),
         };
         if let TypeKind::Generic(name, args) = &t.kind {
             assert_eq!(name, "Scalar");

@@ -21,6 +21,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::IntLit(v),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Float(n) => {
@@ -29,6 +30,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::FloatLit(v),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Str(s) => {
@@ -37,6 +39,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::StrLit(s),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::True => {
@@ -44,6 +47,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::BoolLit(true),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::False => {
@@ -51,6 +55,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::BoolLit(false),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Ident(name) => {
@@ -59,6 +64,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::Ident(name),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::LParen => {
@@ -69,6 +75,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: inner.kind,
                 span: Span::merge(start, end),
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::LBracket => parse_vec_or_mat_lit(p),
@@ -96,6 +103,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, Diagnostic> {
         return Ok(Expr {
             kind: ExprKind::MatLit(rows),
             span: Span::merge(start, end),
+            id: p.fresh_node_id(),
         });
     }
     // Vector literal (possibly empty)
@@ -105,6 +113,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, Diagnostic> {
     Ok(Expr {
         kind: ExprKind::VecLit(elems),
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -155,6 +164,7 @@ fn parse_if_expr(p: &mut Parser) -> Result<Expr, Diagnostic> {
             else_block,
         }),
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -172,6 +182,7 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, Diagnostic> {
                 expr = Expr {
                     kind: ExprKind::Call(Box::new(expr), args),
                     span,
+                    id: p.fresh_node_id(),
                 };
             }
             TokenKind::LBracket => {
@@ -183,6 +194,7 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, Diagnostic> {
                 expr = Expr {
                     kind: ExprKind::Index(Box::new(expr), Box::new(idx)),
                     span,
+                    id: p.fresh_node_id(),
                 };
             }
             TokenKind::Dot => {
@@ -201,6 +213,7 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, Diagnostic> {
                 expr = Expr {
                     kind: ExprKind::FieldAccess(Box::new(expr), field),
                     span,
+                    id: p.fresh_node_id(),
                 };
             }
             TokenKind::LBrace => {
@@ -222,6 +235,7 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, Diagnostic> {
                 expr = Expr {
                     kind: ExprKind::StructLit(name, fields),
                     span,
+                    id: p.fresh_node_id(),
                 };
             }
             _ => break,
@@ -266,6 +280,7 @@ fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, Diagnostic> {
         lhs = Expr {
             kind: ExprKind::BinOp(op, Box::new(lhs), Box::new(rhs)),
             span,
+            id: p.fresh_node_id(),
         };
     }
 
@@ -285,6 +300,7 @@ fn parse_prefix(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::UnaryOp(UnaryOp::Not, Box::new(rhs)),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Minus => {
@@ -294,6 +310,7 @@ fn parse_prefix(p: &mut Parser) -> Result<Expr, Diagnostic> {
             Ok(Expr {
                 kind: ExprKind::UnaryOp(UnaryOp::Neg, Box::new(rhs)),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         _ => parse_postfix(p),
@@ -330,6 +347,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
             Ok(Pattern {
                 kind: PatternKind::Wildcard,
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Ident(name) => {
@@ -349,11 +367,13 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
                 Ok(Pattern {
                     kind: PatternKind::Variant(n, payload),
                     span: Span::merge(start, end),
+                    id: p.fresh_node_id(),
                 })
             } else {
                 Ok(Pattern {
                     kind: PatternKind::Ident(n),
                     span: ident_span,
+                    id: p.fresh_node_id(),
                 })
             }
         }
@@ -363,6 +383,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
             Ok(Pattern {
                 kind: PatternKind::IntLit(v),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Minus => {
@@ -374,6 +395,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
                     Ok(Pattern {
                         kind: PatternKind::IntLit(-v),
                         span: Span::merge(start, int_span),
+                        id: p.fresh_node_id(),
                     })
                 }
                 TokenKind::Float(_) => {
@@ -398,6 +420,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
             Ok(Pattern {
                 kind: PatternKind::BoolLit(true),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::False => {
@@ -405,6 +428,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
             Ok(Pattern {
                 kind: PatternKind::BoolLit(false),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         TokenKind::Str(s) => {
@@ -413,6 +437,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
             Ok(Pattern {
                 kind: PatternKind::StrLit(s),
                 span,
+                id: p.fresh_node_id(),
             })
         }
         other => {
@@ -451,6 +476,7 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, Diagnostic> {
             pattern,
             body,
             span: arm_span,
+            id: p.fresh_node_id(),
         });
     }
 
@@ -466,6 +492,7 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, Diagnostic> {
     Ok(Expr {
         kind: ExprKind::Match(Box::new(scrutinee), arms),
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 

@@ -6,6 +6,7 @@ pub(crate) mod types;
 
 use crate::ast::Program;
 use crate::diag::Diagnostic;
+use crate::ids::NodeId;
 use crate::lexer::{Token, TokenKind};
 use crate::source::Span;
 
@@ -17,11 +18,22 @@ pub(crate) fn parse(tokens: Vec<Token>) -> Result<Program, Diagnostic> {
 pub(crate) struct Parser<'t> {
     tokens: &'t [Token],
     pos: usize,
+    next_node_id: u32,
 }
 
 impl<'t> Parser<'t> {
     pub(crate) fn new(tokens: &'t [Token]) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            next_node_id: 0,
+        }
+    }
+
+    pub(crate) fn fresh_node_id(&mut self) -> NodeId {
+        let id = NodeId(self.next_node_id);
+        self.next_node_id += 1;
+        id
     }
 
     pub(crate) fn peek(&self) -> &'t Token {

@@ -1,11 +1,13 @@
 //! Expression AST nodes.
 
+use crate::ids::NodeId;
 use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +79,7 @@ mod tests {
         let e = Expr {
             kind: ExprKind::IntLit(42),
             span: Span::new(0, 2),
+            id: NodeId(0),
         };
         assert_eq!(e.kind, ExprKind::IntLit(42));
     }
@@ -86,14 +89,17 @@ mod tests {
         let lhs = Expr {
             kind: ExprKind::IntLit(1),
             span: Span::new(0, 1),
+            id: NodeId(0),
         };
         let rhs = Expr {
             kind: ExprKind::IntLit(2),
             span: Span::new(4, 5),
+            id: NodeId(0),
         };
         let e = Expr {
             kind: ExprKind::BinOp(BinOp::Add, Box::new(lhs), Box::new(rhs)),
             span: Span::new(0, 5),
+            id: NodeId(0),
         };
         match e.kind {
             ExprKind::BinOp(BinOp::Add, _, _) => {}
