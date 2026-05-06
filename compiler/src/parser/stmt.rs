@@ -4,21 +4,21 @@ use crate::ast::{
     Block, EnumDef, EnumVariant, ForStmt, FunctionDef, Item, LetStmt, Param, Program, Stmt,
     StmtKind, StructDef, StructField, WhileStmt,
 };
-use crate::error::CompileError;
+use crate::diag::Diagnostic;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::parser::expr::parse_expr;
 use crate::parser::types::parse_type;
 use crate::source::Span;
 
-pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
+pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, Diagnostic> {
     p.consume_newlines();
     let start = p.current_span();
     let mut items = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::Eof) {
         let item = parse_item(p)?;
         if !matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof) {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!(
                     "expected newline after statement, found {:?}",
@@ -36,7 +36,7 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, CompileError> {
     })
 }
 
-fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
+fn parse_item(p: &mut Parser) -> Result<Item, Diagnostic> {
     match p.peek_kind() {
         TokenKind::Function => Ok(Item::Function(parse_function_def(p)?)),
         TokenKind::Let => {
@@ -49,7 +49,7 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
         }
         TokenKind::Struct => Ok(Item::Struct(parse_struct_def(p)?)),
         TokenKind::Enum => Ok(Item::Enum(parse_enum_def(p)?)),
-        _ => Err(CompileError::parse(
+        _ => Err(Diagnostic::parse_error(
             p.current_span(),
             format!(
                 "expected top-level item (function, let, struct, or enum), found {:?}",
@@ -59,13 +59,13 @@ fn parse_item(p: &mut Parser) -> Result<Item, CompileError> {
     }
 }
 
-fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
+fn parse_struct_def(p: &mut Parser) -> Result<StructDef, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::Struct, "'struct'")?;
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 "expected struct name",
             ));
@@ -78,7 +78,12 @@ fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
         let field_start = p.current_span();
         let fname = match p.peek_kind() {
             TokenKind::Ident(n) => n.clone(),
-            _ => return Err(CompileError::parse(p.current_span(), "expected field name")),
+            _ => {
+                return Err(Diagnostic::parse_error(
+                    p.current_span(),
+                    "expected field name",
+                ));
+            }
         };
         p.advance();
         p.expect(&TokenKind::Colon, "':'")?;
@@ -94,7 +99,7 @@ fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
             p.peek_kind(),
             TokenKind::Newline | TokenKind::End | TokenKind::Eof
         ) {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!(
                     "expected newline after struct field, found {:?}",
@@ -113,12 +118,17 @@ fn parse_struct_def(p: &mut Parser) -> Result<StructDef, CompileError> {
     })
 }
 
-fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
+fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::Enum, "'enum'")?;
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(p.current_span(), "expected enum name")),
+        _ => {
+            return Err(Diagnostic::parse_error(
+                p.current_span(),
+                "expected enum name",
+            ));
+        }
     };
     p.advance();
     let type_params = crate::parser::types::parse_type_param_list(p)?;
@@ -131,7 +141,7 @@ fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
             p.peek_kind(),
             TokenKind::Newline | TokenKind::End | TokenKind::Eof
         ) {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!(
                     "expected newline after enum variant, found {:?}",
@@ -151,12 +161,12 @@ fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, CompileError> {
     })
 }
 
-fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, CompileError> {
+fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, Diagnostic> {
     let start = p.current_span();
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 "expected variant name",
             ));
@@ -187,7 +197,7 @@ fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, CompileError> {
     })
 }
 
-pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     match p.peek_kind() {
         TokenKind::Let => parse_let_stmt(p),
         TokenKind::Return => parse_return_stmt(p),
@@ -198,13 +208,13 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     }
 }
 
-fn parse_let_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+fn parse_let_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::Let, "'let'")?;
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         other => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!("expected identifier after 'let', found {other:?}"),
             ));
@@ -222,7 +232,7 @@ fn parse_let_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
-fn parse_assign_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+fn parse_assign_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     let name_tok = p.advance().clone();
     let name = match name_tok.kind {
         TokenKind::Ident(n) => n,
@@ -237,7 +247,7 @@ fn parse_assign_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
-fn parse_return_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+fn parse_return_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::Return, "'return'")?;
     if matches!(
@@ -257,7 +267,7 @@ fn parse_return_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
-fn parse_expr_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+fn parse_expr_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     let expr = parse_expr(p)?;
     let span = expr.span;
     Ok(Stmt {
@@ -266,7 +276,7 @@ fn parse_expr_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
-fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::While, "'while'")?;
     let cond = parse_expr(p)?;
@@ -280,13 +290,13 @@ fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
-fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
+fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::For, "'for'")?;
     let first = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 "expected identifier after 'for'",
             ));
@@ -319,7 +329,7 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
         let second = match p.peek_kind() {
             TokenKind::Ident(n) => n.clone(),
             _ => {
-                return Err(CompileError::parse(
+                return Err(Diagnostic::parse_error(
                     p.current_span(),
                     "expected identifier after ','",
                 ));
@@ -360,13 +370,13 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, CompileError> {
     })
 }
 
-fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
+fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::Function, "'function'")?;
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 "expected function name",
             ));
@@ -390,11 +400,11 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, CompileError> {
     })
 }
 
-fn parse_param(p: &mut Parser) -> Result<Param, CompileError> {
+fn parse_param(p: &mut Parser) -> Result<Param, Diagnostic> {
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         _ => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 "expected parameter name",
             ));
@@ -412,7 +422,7 @@ fn parse_param(p: &mut Parser) -> Result<Param, CompileError> {
 pub(crate) enum EmptyHandling {
     /// Empty list is allowed; return `Vec::new()`.
     Allow,
-    /// Empty list is rejected; emit `CompileError::parse` with this message.
+    /// Empty list is rejected; emit `Diagnostic::parse_error` with this message.
     Reject(&'static str),
     /// Don't pre-check; let `parse_one` produce its own error if it fails.
     /// Use when the original code did not have an explicit empty check.
@@ -427,15 +437,15 @@ pub(crate) fn parse_comma_list<T, F>(
     close: &TokenKind,
     empty: EmptyHandling,
     mut parse_one: F,
-) -> Result<Vec<T>, CompileError>
+) -> Result<Vec<T>, Diagnostic>
 where
-    F: FnMut(&mut Parser) -> Result<T, CompileError>,
+    F: FnMut(&mut Parser) -> Result<T, Diagnostic>,
 {
     p.consume_newlines();
     if p.at(close) {
         return match empty {
             EmptyHandling::Allow => Ok(Vec::new()),
-            EmptyHandling::Reject(msg) => Err(CompileError::parse(p.current_span(), msg)),
+            EmptyHandling::Reject(msg) => Err(Diagnostic::parse_error(p.current_span(), msg)),
             EmptyHandling::RequireOne => {
                 // Call parse_one which will produce its own error
                 // (e.g. parse_type at `>` fails with "expected type name, found Gt").
@@ -468,7 +478,7 @@ pub(crate) fn parse_block_body<F>(
     is_terminator: F,
     eof_msg: &'static str,
     after_stmt_label: &'static str,
-) -> Result<Block, CompileError>
+) -> Result<Block, Diagnostic>
 where
     F: Fn(&Parser) -> bool,
 {
@@ -478,13 +488,13 @@ where
     let mut end_span = start;
     while !is_terminator(p) {
         if matches!(p.peek_kind(), TokenKind::Eof) {
-            return Err(CompileError::parse(p.current_span(), eof_msg));
+            return Err(Diagnostic::parse_error(p.current_span(), eof_msg));
         }
         let stmt = parse_stmt(p)?;
         end_span = stmt.span;
         stmts.push(stmt);
         if !matches!(p.peek_kind(), TokenKind::Newline | TokenKind::Eof) && !is_terminator(p) {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!("{}, found {:?}", after_stmt_label, p.peek_kind()),
             ));
@@ -502,7 +512,7 @@ where
 pub(crate) fn parse_block_until(
     p: &mut Parser,
     terminators: &[TokenKindKind],
-) -> Result<Block, CompileError> {
+) -> Result<Block, Diagnostic> {
     parse_block_body(
         p,
         |p| is_at_terminator(p, terminators),
@@ -709,7 +719,7 @@ mod tests {
         assert_eq!(p.items.len(), 0);
     }
 
-    fn parse_prog_err(source: &str) -> CompileError {
+    fn parse_prog_err(source: &str) -> Diagnostic {
         let toks = tokenize(source).unwrap();
         let mut p = Parser::new(&toks);
         parse_program(&mut p).unwrap_err()

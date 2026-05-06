@@ -5,11 +5,11 @@ pub(crate) mod stmt;
 pub(crate) mod types;
 
 use crate::ast::Program;
-use crate::error::CompileError;
+use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
 use crate::source::Span;
 
-pub(crate) fn parse(tokens: Vec<Token>) -> Result<Program, CompileError> {
+pub(crate) fn parse(tokens: Vec<Token>) -> Result<Program, Diagnostic> {
     let mut parser = Parser::new(&tokens);
     stmt::parse_program(&mut parser)
 }
@@ -58,16 +58,12 @@ impl<'t> Parser<'t> {
         }
     }
 
-    pub(crate) fn expect(
-        &mut self,
-        kind: &TokenKind,
-        ctx: &str,
-    ) -> Result<&'t Token, CompileError> {
+    pub(crate) fn expect(&mut self, kind: &TokenKind, ctx: &str) -> Result<&'t Token, Diagnostic> {
         if self.at(kind) {
             Ok(self.advance())
         } else {
             let tok = self.peek();
-            Err(CompileError::parse(
+            Err(Diagnostic::parse_error(
                 tok.span,
                 format!("expected {ctx}, found {:?}", tok.kind),
             ))

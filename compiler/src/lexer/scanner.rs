@@ -1,10 +1,10 @@
 //! Hand-written lexer state machine.
 
-use crate::error::CompileError;
+use crate::diag::Diagnostic;
 use crate::lexer::token::{Token, TokenKind};
 use crate::source::Span;
 
-pub(crate) fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
+pub(crate) fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut scanner = Scanner::new(source);
     scanner.run()?;
     Ok(scanner.tokens)
@@ -25,7 +25,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn run(&mut self) -> Result<(), CompileError> {
+    fn run(&mut self) -> Result<(), Diagnostic> {
         while self.pos < self.source.len() {
             let b = self.source[self.pos];
             match b {
@@ -62,7 +62,7 @@ impl<'a> Scanner<'a> {
                     if self.peek_byte(1) == Some(b'=') {
                         self.push_two(TokenKind::Neq);
                     } else {
-                        return Err(CompileError::lex(
+                        return Err(Diagnostic::lex_error(
                             Span::new(self.pos, self.pos + 1),
                             "unexpected '!' (did you mean '!='?)",
                         ));
@@ -95,7 +95,7 @@ impl<'a> Scanner<'a> {
                 b'"' => self.scan_string()?,
                 b if b.is_ascii_alphabetic() || b == b'_' => self.scan_ident(),
                 _ => {
-                    return Err(CompileError::lex(
+                    return Err(Diagnostic::lex_error(
                         Span::new(self.pos, self.pos + 1),
                         format!("unexpected byte 0x{b:02x}"),
                     ));
@@ -159,7 +159,7 @@ impl<'a> Scanner<'a> {
         });
     }
 
-    fn scan_number(&mut self) -> Result<(), CompileError> {
+    fn scan_number(&mut self) -> Result<(), Diagnostic> {
         let start = self.pos;
         while self.pos < self.source.len() && self.source[self.pos].is_ascii_digit() {
             self.pos += 1;
@@ -176,13 +176,13 @@ impl<'a> Scanner<'a> {
                         self.pos += 1;
                     }
                 } else {
-                    return Err(CompileError::lex(
+                    return Err(Diagnostic::lex_error(
                         Span::new(self.pos, self.pos + 1),
                         "expected digit after '.' in float literal",
                     ));
                 }
             } else {
-                return Err(CompileError::lex(
+                return Err(Diagnostic::lex_error(
                     Span::new(self.pos, self.pos + 1),
                     "expected digit after '.' in float literal",
                 ));
@@ -201,7 +201,7 @@ impl<'a> Scanner<'a> {
                 self.pos += 1;
             }
             if self.pos == exp_start {
-                return Err(CompileError::lex(
+                return Err(Diagnostic::lex_error(
                     Span::new(self.pos, self.pos + 1),
                     "expected digits in exponent",
                 ));
@@ -210,17 +210,16 @@ impl<'a> Scanner<'a> {
 
         let span = Span::new(start, self.pos);
         let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
-        let kind = if is_float {
-            TokenKind::Float(
-                text.parse::<f64>()
-                    .map_err(|e| CompileError::lex(span, format!("invalid float literal: {e}")))?,
-            )
-        } else {
-            TokenKind::Int(
-                text.parse::<i64>()
-                    .map_err(|e| CompileError::lex(span, format!("invalid int literal: {e}")))?,
-            )
-        };
+        let kind =
+            if is_float {
+                TokenKind::Float(text.parse::<f64>().map_err(|e| {
+                    Diagnostic::lex_error(span, format!("invalid float literal: {e}"))
+                })?)
+            } else {
+                TokenKind::Int(text.parse::<i64>().map_err(|e| {
+                    Diagnostic::lex_error(span, format!("invalid int literal: {e}"))
+                })?)
+            };
         self.tokens.push(Token { kind, span });
         Ok(())
     }
@@ -241,13 +240,13 @@ impl<'a> Scanner<'a> {
         self.tokens.push(Token { kind, span });
     }
 
-    fn scan_string(&mut self) -> Result<(), CompileError> {
+    fn scan_string(&mut self) -> Result<(), Diagnostic> {
         let start = self.pos;
         self.pos += 1; // consume opening "
         let mut buf: Vec<u8> = Vec::new();
         loop {
             if self.pos >= self.source.len() {
-                return Err(CompileError::lex(
+                return Err(Diagnostic::lex_error(
                     Span::new(start, self.pos),
                     "unterminated string literal",
                 ));
@@ -269,7 +268,7 @@ impl<'a> Scanner<'a> {
                 b'\\' => {
                     self.pos += 1;
                     let esc = self.source.get(self.pos).copied().ok_or_else(|| {
-                        CompileError::lex(
+                        Diagnostic::lex_error(
                             Span::new(self.pos - 1, self.pos),
                             "unterminated escape in string",
                         )
@@ -280,7 +279,7 @@ impl<'a> Scanner<'a> {
                         b'\\' => b'\\',
                         b'"' => b'"',
                         other => {
-                            return Err(CompileError::lex(
+                            return Err(Diagnostic::lex_error(
                                 Span::new(self.pos - 1, self.pos + 1),
                                 format!("unknown escape '\\{}'", other as char),
                             ));
@@ -290,7 +289,7 @@ impl<'a> Scanner<'a> {
                     self.pos += 1;
                 }
                 b'\n' => {
-                    return Err(CompileError::lex(
+                    return Err(Diagnostic::lex_error(
                         Span::new(self.pos, self.pos + 1),
                         "newline in string literal",
                     ));
