@@ -160,6 +160,7 @@ mod tests {
         let d = Diagnostic::type_error(Span::new(0, 1), "expected Int")
             .with_label(Span::new(5, 10), "found String here");
         assert_eq!(d.labels.len(), 1);
+        assert_eq!(d.labels[0].0, Span::new(5, 10));
         assert_eq!(d.labels[0].1, "found String here");
     }
 
@@ -170,6 +171,7 @@ mod tests {
             .with_note("see docs/types.md for conversion rules");
         assert_eq!(d.notes.len(), 2);
         assert_eq!(d.notes[0], "did you mean to_int(x)?");
+        assert_eq!(d.notes[1], "see docs/types.md for conversion rules");
     }
 
     #[test]
