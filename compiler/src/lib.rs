@@ -1,16 +1,16 @@
 //! Dyne compiler library.
 
 pub mod ast;
-pub mod error;
+pub mod diag;
 pub mod source;
 
 pub(crate) mod lexer;
 pub(crate) mod parser;
 
 use crate::ast::Program;
-use crate::error::CompileError;
+use crate::diag::Diagnostic;
 
-pub fn compile(source: &str) -> Result<Program, CompileError> {
+pub fn compile(source: &str) -> Result<Program, Diagnostic> {
     let tokens = lexer::tokenize(source)?;
     parser::parse(tokens)
 }
@@ -41,12 +41,12 @@ mod tests {
     #[test]
     fn lex_error_propagates() {
         let err = compile("@").unwrap_err();
-        assert_eq!(err.kind, crate::error::ErrorKind::Lex);
+        assert_eq!(err.phase, crate::diag::Phase::Lex);
     }
 
     #[test]
     fn parse_error_propagates() {
         let err = compile("let").unwrap_err();
-        assert_eq!(err.kind, crate::error::ErrorKind::Parse);
+        assert_eq!(err.phase, crate::diag::Phase::Parse);
     }
 }

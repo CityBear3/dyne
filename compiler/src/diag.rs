@@ -1,51 +1,53 @@
-//! Compile-time error type.
+//! Compile-time diagnostic type.
 
 use crate::source::{SourceFile, Span};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ErrorKind {
+pub enum Phase {
     Lex,
     Parse,
+    Sema,
 }
 
-impl ErrorKind {
+impl Phase {
     fn label(self) -> &'static str {
         match self {
-            ErrorKind::Lex => "lex error",
-            ErrorKind::Parse => "parse error",
+            Phase::Lex => "lex error",
+            Phase::Parse => "parse error",
+            Phase::Sema => "sema error",
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct CompileError {
-    pub kind: ErrorKind,
+pub struct Diagnostic {
+    pub phase: Phase,
     pub span: Span,
     pub message: String,
 }
 
-impl CompileError {
-    pub fn new(kind: ErrorKind, span: Span, message: impl Into<String>) -> Self {
+impl Diagnostic {
+    pub fn new(phase: Phase, span: Span, message: impl Into<String>) -> Self {
         Self {
-            kind,
+            phase,
             span,
             message: message.into(),
         }
     }
 
-    pub fn lex(span: Span, message: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Lex, span, message)
+    pub fn lex_error(span: Span, message: impl Into<String>) -> Self {
+        Self::new(Phase::Lex, span, message)
     }
 
-    pub fn parse(span: Span, message: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Parse, span, message)
+    pub fn parse_error(span: Span, message: impl Into<String>) -> Self {
+        Self::new(Phase::Parse, span, message)
     }
 
-    /// Render the error with line/column and source excerpt.
+    /// Render the diagnostic with line/column and source excerpt.
     pub fn render(&self, source: &SourceFile) -> String {
         let (line, col) = source.line_col(self.span.start);
-        let kind = self.kind.label();
+        let kind = self.phase.label();
         let excerpt = source.line_text(line).unwrap_or("");
         let caret_col = col.saturating_sub(1);
         let caret = " ".repeat(caret_col) + "^";
@@ -61,14 +63,14 @@ impl CompileError {
     }
 }
 
-impl fmt::Display for CompileError {
+impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = self.kind.label();
+        let kind = self.phase.label();
         write!(f, "{kind} at offset {}: {}", self.span.start, self.message)
     }
 }
 
-impl std::error::Error for CompileError {}
+impl std::error::Error for Diagnostic {}
 
 #[cfg(test)]
 mod tests {
@@ -77,7 +79,7 @@ mod tests {
     #[test]
     fn render_points_to_line_and_column() {
         let src = SourceFile::new("let x = 1\nlet y = ?\nlet z = 3");
-        let err = CompileError::lex(Span::new(18, 19), "unexpected character '?'");
+        let err = Diagnostic::lex_error(Span::new(18, 19), "unexpected character '?'");
         let rendered = err.render(&src);
         assert!(rendered.contains("line 2, col 9"));
         assert!(rendered.contains("let y = ?"));
@@ -86,14 +88,14 @@ mod tests {
 
     #[test]
     fn display_short_form() {
-        let err = CompileError::parse(Span::new(5, 6), "expected ')'");
+        let err = Diagnostic::parse_error(Span::new(5, 6), "expected ')'");
         assert_eq!(format!("{err}"), "parse error at offset 5: expected ')'");
     }
 
     #[test]
     fn render_for_parse_error() {
         let src = SourceFile::new("ab cd");
-        let err = CompileError::parse(Span::new(3, 4), "expected '('");
+        let err = Diagnostic::parse_error(Span::new(3, 4), "expected '('");
         let rendered = err.render(&src);
         assert!(rendered.contains("parse error"));
         assert!(rendered.contains("expected '('"));
@@ -101,7 +103,7 @@ mod tests {
 
     #[test]
     fn display_for_lex_error() {
-        let err = CompileError::lex(Span::new(0, 1), "bad byte");
+        let err = Diagnostic::lex_error(Span::new(0, 1), "bad byte");
         assert_eq!(format!("{err}"), "lex error at offset 0: bad byte");
     }
 }

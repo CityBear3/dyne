@@ -1,13 +1,13 @@
 //! Type expression parser.
 
 use crate::ast::{Type, TypeArg, TypeKind, UnitExpr, UnitExprKind};
-use crate::error::CompileError;
+use crate::diag::Diagnostic;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::parser::stmt::{EmptyHandling, parse_comma_list};
 use crate::source::Span;
 
-pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
+pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, Diagnostic> {
     let start = p.current_span();
 
     // Function type: Fn(T, ...) -> R
@@ -31,7 +31,7 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         other => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!("expected type name, found {other:?}"),
             ));
@@ -55,7 +55,7 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, CompileError> {
     }
 }
 
-pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, CompileError> {
+pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, Diagnostic> {
     if !p.eat(&TokenKind::Lt) {
         return Ok(Vec::new());
     }
@@ -71,21 +71,21 @@ pub(crate) fn parse_type_param_list(p: &mut Parser) -> Result<Vec<String>, Compi
     Ok(params)
 }
 
-fn parse_type_param_name(p: &mut Parser) -> Result<String, CompileError> {
+fn parse_type_param_name(p: &mut Parser) -> Result<String, Diagnostic> {
     match p.peek_kind() {
         TokenKind::Ident(n) => {
             let n = n.clone();
             p.advance();
             Ok(n)
         }
-        _ => Err(CompileError::parse(
+        _ => Err(Diagnostic::parse_error(
             p.current_span(),
             "expected type parameter name",
         )),
     }
 }
 
-fn parse_type_arg(p: &mut Parser) -> Result<TypeArg, CompileError> {
+fn parse_type_arg(p: &mut Parser) -> Result<TypeArg, Diagnostic> {
     // Int literal
     if let TokenKind::Int(n) = p.peek_kind() {
         let n = *n;
@@ -116,7 +116,7 @@ fn parse_type_arg(p: &mut Parser) -> Result<TypeArg, CompileError> {
     Ok(TypeArg::Type(t))
 }
 
-fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, CompileError> {
+fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
     let mut lhs = parse_unit_factor(p)?;
     loop {
         if p.eat(&TokenKind::Star) {
@@ -140,11 +140,11 @@ fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, CompileError> {
     Ok(lhs)
 }
 
-fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, CompileError> {
+fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
     let atom = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
         other => {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 format!("expected unit atom, found {other:?}"),
             ));
@@ -159,7 +159,7 @@ fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, CompileError> {
         let n = match p.peek_kind() {
             TokenKind::Int(n) => *n,
             other => {
-                return Err(CompileError::parse(
+                return Err(Diagnostic::parse_error(
                     p.current_span(),
                     format!("expected integer exponent, found {other:?}"),
                 ));

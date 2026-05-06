@@ -1,7 +1,7 @@
 //! Expression parser.
 
 use crate::ast::{BinOp, Block, Expr, ExprKind, IfExpr, MatchArm, Pattern, PatternKind, UnaryOp};
-use crate::error::CompileError;
+use crate::diag::Diagnostic;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::parser::stmt::{
@@ -9,11 +9,11 @@ use crate::parser::stmt::{
 };
 use crate::source::Span;
 
-pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, CompileError> {
+pub(crate) fn parse_expr(p: &mut Parser) -> Result<Expr, Diagnostic> {
     parse_bp(p, 0)
 }
 
-fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
+fn parse_primary(p: &mut Parser) -> Result<Expr, Diagnostic> {
     match p.peek_kind() {
         TokenKind::Int(n) => {
             let v = *n;
@@ -76,7 +76,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
         TokenKind::Match => parse_match_expr(p),
         other => {
             let span = p.current_span();
-            Err(CompileError::parse(
+            Err(Diagnostic::parse_error(
                 span,
                 format!("expected expression, found {other:?}"),
             ))
@@ -84,7 +84,7 @@ fn parse_primary(p: &mut Parser) -> Result<Expr, CompileError> {
     }
 }
 
-fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
+fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, Diagnostic> {
     let start = p.peek().span;
     p.advance(); // consume '['
     p.consume_newlines();
@@ -108,7 +108,7 @@ fn parse_vec_or_mat_lit(p: &mut Parser) -> Result<Expr, CompileError> {
     })
 }
 
-fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
+fn parse_if_expr(p: &mut Parser) -> Result<Expr, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::If, "'if'")?;
     let cond = parse_expr(p)?;
@@ -158,7 +158,7 @@ fn parse_if_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     })
 }
 
-fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
+fn parse_postfix(p: &mut Parser) -> Result<Expr, Diagnostic> {
     let mut expr = parse_primary(p)?;
     loop {
         match p.peek_kind() {
@@ -190,7 +190,7 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
                 let field = match p.peek_kind() {
                     TokenKind::Ident(n) => n.clone(),
                     other => {
-                        return Err(CompileError::parse(
+                        return Err(Diagnostic::parse_error(
                             p.current_span(),
                             format!("expected field name, found {other:?}"),
                         ));
@@ -230,10 +230,15 @@ fn parse_postfix(p: &mut Parser) -> Result<Expr, CompileError> {
     Ok(expr)
 }
 
-fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError> {
+fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), Diagnostic> {
     let name = match p.peek_kind() {
         TokenKind::Ident(n) => n.clone(),
-        _ => return Err(CompileError::parse(p.current_span(), "expected field name")),
+        _ => {
+            return Err(Diagnostic::parse_error(
+                p.current_span(),
+                "expected field name",
+            ));
+        }
     };
     p.advance();
     p.expect(&TokenKind::Colon, "':'")?;
@@ -241,14 +246,14 @@ fn parse_struct_lit_field(p: &mut Parser) -> Result<(String, Expr), CompileError
     Ok((name, value))
 }
 
-fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, CompileError> {
+fn parse_row(p: &mut Parser) -> Result<Vec<Expr>, Diagnostic> {
     p.expect(&TokenKind::LBracket, "'['")?;
     let row = parse_comma_list(p, &TokenKind::RBracket, EmptyHandling::Allow, parse_expr)?;
     p.expect(&TokenKind::RBracket, "']'")?;
     Ok(row)
 }
 
-fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, CompileError> {
+fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, Diagnostic> {
     let mut lhs = parse_prefix(p)?;
 
     while let Some((op, lbp, rbp)) = infix_op(p.peek_kind()) {
@@ -270,7 +275,7 @@ fn parse_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, CompileError> {
 /// Prefix operators (`not`, unary `-`) per Design Doc §6.6 precedence table.
 /// `not` (precedence 3) consumes comparison and above (rbp = 4).
 /// Unary `-` (precedence 7) consumes `^` but stops at `*` `/` (rbp = `^` lbp = 12).
-fn parse_prefix(p: &mut Parser) -> Result<Expr, CompileError> {
+fn parse_prefix(p: &mut Parser) -> Result<Expr, Diagnostic> {
     let start = p.current_span();
     match p.peek_kind() {
         TokenKind::Not => {
@@ -317,7 +322,7 @@ fn infix_op(kind: &TokenKind) -> Option<(BinOp, u8, u8)> {
 
 const FLOAT_PATTERN_REJECTED: &str = "floating-point literal patterns are rejected: IEEE 754 equality is unreliable (NaN \u{2260} NaN, rounding error). Only Int / Bool / String literal patterns are supported in `case` arms.";
 
-pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
+pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, Diagnostic> {
     let start = p.current_span();
     match p.peek_kind() {
         TokenKind::Ident(name) if name == "_" => {
@@ -373,21 +378,21 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
                 }
                 TokenKind::Float(_) => {
                     let float_span = p.current_span();
-                    Err(CompileError::parse(
+                    Err(Diagnostic::parse_error(
                         Span::merge(start, float_span),
                         FLOAT_PATTERN_REJECTED,
                     ))
                 }
                 other => {
                     let span = p.current_span();
-                    Err(CompileError::parse(
+                    Err(Diagnostic::parse_error(
                         span,
                         format!("expected integer literal after '-' in pattern, found {other:?}"),
                     ))
                 }
             }
         }
-        TokenKind::Float(_) => Err(CompileError::parse(start, FLOAT_PATTERN_REJECTED)),
+        TokenKind::Float(_) => Err(Diagnostic::parse_error(start, FLOAT_PATTERN_REJECTED)),
         TokenKind::True => {
             let span = p.advance().span;
             Ok(Pattern {
@@ -412,7 +417,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
         }
         other => {
             let span = p.current_span();
-            Err(CompileError::parse(
+            Err(Diagnostic::parse_error(
                 span,
                 format!("expected pattern, found {other:?}"),
             ))
@@ -420,7 +425,7 @@ pub(crate) fn parse_pattern(p: &mut Parser) -> Result<Pattern, CompileError> {
     }
 }
 
-fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
+fn parse_match_expr(p: &mut Parser) -> Result<Expr, Diagnostic> {
     let start = p.current_span();
     p.expect(&TokenKind::Match, "'match'")?;
     let scrutinee = parse_expr(p)?;
@@ -429,7 +434,7 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     let mut arms = Vec::new();
     while !matches!(p.peek_kind(), TokenKind::End) {
         if matches!(p.peek_kind(), TokenKind::Eof) {
-            return Err(CompileError::parse(
+            return Err(Diagnostic::parse_error(
                 p.current_span(),
                 "unexpected end of input inside match expression",
             ));
@@ -450,7 +455,7 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     }
 
     if arms.is_empty() {
-        return Err(CompileError::parse(
+        return Err(Diagnostic::parse_error(
             p.current_span(),
             "match expression requires at least one `case` arm",
         ));
@@ -464,7 +469,7 @@ fn parse_match_expr(p: &mut Parser) -> Result<Expr, CompileError> {
     })
 }
 
-fn parse_match_arm_body(p: &mut Parser) -> Result<Block, CompileError> {
+fn parse_match_arm_body(p: &mut Parser) -> Result<Block, Diagnostic> {
     parse_block_body(
         p,
         |p| matches!(p.peek_kind(), TokenKind::End | TokenKind::Case),
