@@ -3,6 +3,7 @@
 pub mod ast;
 pub mod diag;
 pub mod ids;
+pub mod sema;
 pub mod source;
 
 pub(crate) mod lexer;
