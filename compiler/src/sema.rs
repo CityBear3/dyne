@@ -23,6 +23,7 @@ pub type TypeTable = HashMap<NodeId, ()>;
 /// constructor enforces the phase boundary at compile time. Stage 4
 /// will accept `&TypedProgram` rather than `Program`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TypedProgram {
     pub program: Program,
     pub types: TypeTable,
