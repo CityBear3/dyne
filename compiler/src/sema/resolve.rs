@@ -106,18 +106,19 @@ impl Resolver {
         }
     }
 
-    fn fresh_def(&mut self, kind: DefKind, name: String, span: Span) -> DefId {
-        let id = DefId(self.next_def);
-        self.next_def += 1;
-        self.definitions
-            .insert(id, DefinitionInfo { kind, span, name });
-        id
-    }
-
+    /// Insert `name` into the current scope and record its definition. On
+    /// same-scope collision, push a duplicate-name diagnostic and return
+    /// `None` *without* allocating a fresh `DefId` — the `definitions` table
+    /// must only contain entries reachable through some scope.
     fn define_or_report(&mut self, name: String, kind: DefKind, span: Span) -> Option<DefId> {
-        let def_id = self.fresh_def(kind, name.clone(), span);
+        let def_id = DefId(self.next_def);
         match self.table.define(name.clone(), def_id, span) {
-            Ok(()) => Some(def_id),
+            Ok(()) => {
+                self.next_def += 1;
+                self.definitions
+                    .insert(def_id, DefinitionInfo { kind, span, name });
+                Some(def_id)
+            }
             Err(prev_span) => {
                 self.diagnostics
                     .push(crate::sema::diag::duplicate_name(span, prev_span, &name));
@@ -513,6 +514,23 @@ mod tests {
         assert!(diags[0].message.contains("`x`"));
         assert!(diags[0].message.contains("already defined"));
         assert!(!diags[0].labels.is_empty());
+    }
+
+    #[test]
+    fn resolve_duplicate_definition_does_not_leak_orphan_def_id() {
+        // Every entry in the definitions table must be reachable through
+        // resolutions or by name lookup; rejected duplicates must not
+        // leave ghost entries (otherwise PR-3b's type-check loop would
+        // visit unbound DefIds).
+        let src = "let x: Int = 1\nlet x: Int = 2";
+        let prog = parse_src(src);
+        let (_resolutions, defs, _diags) = resolve_program(&prog);
+        assert_eq!(
+            defs.len(),
+            1,
+            "rejected duplicate must not leave an orphan DefId in definitions, got {:?}",
+            defs
+        );
     }
 
     #[test]
