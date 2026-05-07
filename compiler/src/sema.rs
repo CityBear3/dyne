@@ -101,11 +101,18 @@ mod tests {
     fn check_program_with_multiple_undefined_names_returns_all() {
         let prog = parse_src("function f(): Int\n  let x: Int = a + b\n  return c\nend");
         let diags = check(prog).expect_err("expected sema errors");
-        assert!(
-            diags.len() >= 3,
-            "expected diagnostics for a, b, c — got {:?}",
+        // Three undefined names → exactly three diagnostics; pin the names
+        // and order so a regression that emits a single name twice (or
+        // skips one) fails loudly.
+        assert_eq!(
+            diags.len(),
+            3,
+            "expected exactly 3 diagnostics for a/b/c, got {:?}",
             diags
         );
+        assert!(diags[0].message.contains("`a`"));
+        assert!(diags[1].message.contains("`b`"));
+        assert!(diags[2].message.contains("`c`"));
     }
 
     #[test]

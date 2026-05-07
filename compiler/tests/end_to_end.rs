@@ -117,31 +117,29 @@ fn stage2_float_pattern_rejected_e2e() {
 fn compile_undefined_name_yields_sema_diagnostic() {
     let src = "function f(): Int\n  return undefined_var\nend";
     let diags = dyne::compile(src).unwrap_err();
-    assert!(diags.iter().any(|d| {
-        d.phase == dyne::diag::Phase::Sema
-            && d.level == dyne::diag::Level::Error
-            && d.message.contains("undefined_var")
-    }));
+    // One undefined reference → exactly one diagnostic.
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert_eq!(diags[0].phase, dyne::diag::Phase::Sema);
+    assert_eq!(diags[0].level, dyne::diag::Level::Error);
+    assert!(diags[0].message.contains("undefined_var"));
 }
 
 #[test]
 fn compile_multiple_undefined_names_emits_multiple_diagnostics() {
     let src = "function f(): Int\n  return a + b\nend";
     let diags = dyne::compile(src).unwrap_err();
-    assert!(
-        diags.len() >= 2,
-        "expected at least 2 diagnostics, got {}",
-        diags.len()
-    );
+    // Two undefined references → exactly two diagnostics, one per name.
+    assert_eq!(diags.len(), 2, "got {:?}", diags);
+    assert!(diags[0].message.contains("`a`"));
+    assert!(diags[1].message.contains("`b`"));
 }
 
 #[test]
 fn compile_duplicate_top_level_definition_yields_diagnostic() {
     let src = "let x: Int = 1\nlet x: Int = 2";
     let diags = dyne::compile(src).unwrap_err();
-    assert!(
-        diags
-            .iter()
-            .any(|d| { d.phase == dyne::diag::Phase::Sema && d.message.contains("`x`") })
-    );
+    // Single duplicate → exactly one diagnostic.
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert_eq!(diags[0].phase, dyne::diag::Phase::Sema);
+    assert!(diags[0].message.contains("`x`"));
 }

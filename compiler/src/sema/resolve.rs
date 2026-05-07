@@ -525,7 +525,12 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("`x`"));
         assert!(diags[0].message.contains("already defined"));
-        assert!(!diags[0].labels.is_empty());
+        // The duplicate carries exactly one secondary label pointing at the
+        // prior definition's site, with the standard "previously defined"
+        // text — pin both so a regression that drops the label or changes
+        // its message fails loudly.
+        assert_eq!(diags[0].labels.len(), 1);
+        assert!(diags[0].labels[0].1.contains("previously defined"));
     }
 
     #[test]
