@@ -112,11 +112,7 @@ pub fn not_a_value(span: Span, kind: DefKind, name: &str) -> Diagnostic {
 /// call site computed the row count as `rows.len()` (the same value
 /// `expected.0` carried), so the diag never read it. Simplified to
 /// take only the column count of the row that triggered the error.
-pub fn mat_shape_mismatch(
-    span: Span,
-    expected: (usize, usize),
-    actual_cols: usize,
-) -> Diagnostic {
+pub fn mat_shape_mismatch(span: Span, expected: (usize, usize), actual_cols: usize) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(

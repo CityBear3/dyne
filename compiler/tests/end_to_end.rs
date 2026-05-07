@@ -264,3 +264,79 @@ fn builtin_match_option_compiles() {
         result.err()
     );
 }
+
+// ----- PR-3c Task 8: end-to-end + carry regressions -----
+
+#[test]
+fn compile_generic_enum_with_exhaustive_match() {
+    // Canonical generic-enum + match form using built-in Option<Int>.
+    let result = dyne::compile(
+        "function f(o: Option<Int>): Int\n  return match o\n    case Some(x) then x\n    case None then 0\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_generic_match_non_exhaustive_yields_diagnostic() {
+    // `Option<Int>` with only `Some` covered — Task 7 exhaustiveness
+    // surfaces the missing `None` variant as a single diag.
+    let result = dyne::compile(
+        "function f(o: Option<Int>): Int\n  return match o\n    case Some(x) then x\n  end\nend",
+    );
+    let diags = result.unwrap_err();
+    assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+    assert!(
+        diags[0].message.contains("None"),
+        "msg: {}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn compile_result_with_pattern_binding() {
+    let result = dyne::compile(
+        "function f(r: Result<Int, String>): Int\n  return match r\n    case Ok(v) then v\n    case Err(_) then -1\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_user_defined_generic_enum_e2e() {
+    // User-defined generic enum exercised end-to-end alongside the
+    // built-ins — confirms the `compile()` pipeline doesn't hard-code
+    // any specific enum names beyond the built-ins.
+    let result = dyne::compile(
+        "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Just(x) then x\n    case Nothing then 0\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_pow_diag_uses_caret_syntax() {
+    // Regression for the synth_pow text fix bundled in this task. The
+    // previous diag text referenced `**` from an early prototype; the
+    // language now consistently calls the operator `^`.
+    let diags = dyne::compile("function f(): Int\n  return true ^ 2\nend").unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message.contains("`^`")),
+        "expected `^` in diag, got: {:?}",
+        diags
+    );
+    assert!(
+        diags.iter().all(|d| !d.message.contains("`**`")),
+        "no diag should reference `**`, got: {:?}",
+        diags
+    );
+}

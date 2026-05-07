@@ -66,31 +66,6 @@ pub struct TypedProgram {
     pub variant_payloads: VariantPayloadMap,
 }
 
-impl TypedProgram {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        program: Program,
-        types: TypeTable,
-        resolutions: ResolveTable,
-        definitions: DefinitionTable,
-        binding_def_ids: BindingTable,
-        def_types: DefTypeMap,
-        struct_fields: StructFieldMap,
-        variant_payloads: VariantPayloadMap,
-    ) -> Self {
-        Self {
-            program,
-            types,
-            resolutions,
-            definitions,
-            binding_def_ids,
-            def_types,
-            struct_fields,
-            variant_payloads,
-        }
-    }
-}
-
 /// Run the semantic-analysis phases over a parsed program.
 ///
 /// Pass 1 (Task 3) lowers top-level signatures into per-DefId tables so
@@ -128,7 +103,7 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     if !diags.is_empty() {
         return Err(diags);
     }
-    Ok(TypedProgram::new(
+    Ok(TypedProgram {
         program,
         types,
         resolutions,
@@ -137,7 +112,7 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
         def_types,
         struct_fields,
         variant_payloads,
-    ))
+    })
 }
 
 /// Walks each top-level item, lowering its declared types into the per-
