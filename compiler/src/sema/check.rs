@@ -479,11 +479,11 @@ impl<'a> TypeChecker<'a> {
         };
         if !matches!(r, Ty::Int) {
             self.diagnostics
-                .push(crate::sema::diag::op_type_error(r_span, "`**` exponent", r));
+                .push(crate::sema::diag::op_type_error(r_span, "`^` exponent", r));
         }
         if matches!(result, Ty::Error) {
             self.diagnostics
-                .push(crate::sema::diag::op_type_error(l_span, "`**` base", l));
+                .push(crate::sema::diag::op_type_error(l_span, "`^` base", l));
         }
         result
     }
