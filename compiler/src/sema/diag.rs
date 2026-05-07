@@ -120,6 +120,32 @@ pub fn mat_shape_mismatch(
     )
 }
 
+/// Match-pattern fired against a scrutinee whose type is not an enum.
+/// `expected_kind` is the pattern's expected category (e.g. "enum") so the
+/// message reads naturally — the scrutinee's type comes from `actual`.
+pub fn pattern_type_mismatch(span: Span, actual: &Ty, expected_kind: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "pattern matches {expected_kind} but scrutinee is `{}`",
+            format_ty(actual)
+        ),
+    )
+}
+
+/// Variant pattern referencing a variant that doesn't belong to the
+/// scrutinee's enum. e.g. `case Some(x)` against a `Result<_, _>`
+/// scrutinee — `Some` is from `Maybe`, not `Result`.
+pub fn wrong_variant_for_enum(span: Span, variant_name: &str, scrut_ty: &Ty) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "variant `{variant_name}` does not belong to scrutinee type `{}`",
+            format_ty(scrut_ty)
+        ),
+    )
+}
+
 /// Render a `Ty` for diagnostic messages. PR-3b uses base names; PR-3d's
 /// `Dimension::format_si` integrates here once units are implemented.
 fn format_ty(ty: &Ty) -> String {

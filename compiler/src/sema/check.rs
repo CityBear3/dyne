@@ -729,30 +729,57 @@ impl<'a> TypeChecker<'a> {
                     self.def_types.insert(def_id, expected.clone());
                 }
             }
-            PatternKind::Variant(_, sub_patterns) => {
+            PatternKind::Variant(name, sub_patterns) => {
                 let Some(variant_def_id) = self.resolutions.get(&p.id).copied() else {
+                    return; // resolver already reported
+                };
+                let Some(variant_info) = self.variant_payloads.get(&variant_def_id).cloned() else {
                     return;
                 };
-                let Some(payload) = self.variant_payloads.get(&variant_def_id).cloned() else {
-                    return;
+                // Resolve the expected (scrutinee) type — it may carry Vars
+                // bound by the outer match's bidirectional flow. We need a
+                // concrete `Ty::Enum(parent, type_args)` to validate the
+                // variant and substitute its payload.
+                let resolved_expected = self.unify_table.resolve(expected);
+                let (parent, type_args) = match &resolved_expected {
+                    Ty::Enum(parent, args) => (*parent, args.clone()),
+                    Ty::Error => return, // no-cascade
+                    other => {
+                        // Pattern fired against a scrutinee whose type isn't
+                        // an enum — e.g. `match 1 { case Some(x) => ... }`.
+                        self.diagnostics
+                            .push(crate::sema::diag::pattern_type_mismatch(
+                                p.span, other, "enum",
+                            ));
+                        return;
+                    }
                 };
-                let parent_matches = matches!(
-                    expected,
-                    Ty::Enum(scrut_def_id, _) if *scrut_def_id == payload.parent_enum
-                );
-                if !parent_matches && !matches!(expected, Ty::Error) {
-                    self.unify_or_diag(&Ty::Enum(payload.parent_enum, vec![]), expected, p.span);
+                if variant_info.parent_enum != parent {
+                    self.diagnostics
+                        .push(crate::sema::diag::wrong_variant_for_enum(
+                            p.span,
+                            name,
+                            &resolved_expected,
+                        ));
                     return;
                 }
-                if sub_patterns.len() != payload.payload.len() {
+                // Substitute Param(i) → type_args[i] in the payload schema.
+                // For non-generic enums type_args is empty and substitution
+                // is identity (no Param positions in the payload).
+                let substituted: Vec<Ty> = variant_info
+                    .payload
+                    .iter()
+                    .map(|t| t.subst_with_args(&type_args))
+                    .collect();
+                if sub_patterns.len() != substituted.len() {
                     self.diagnostics.push(crate::sema::diag::wrong_arity(
                         p.span,
-                        payload.payload.len(),
+                        substituted.len(),
                         sub_patterns.len(),
                     ));
                     return;
                 }
-                for (sub, sub_ty) in sub_patterns.iter().zip(payload.payload.iter()) {
+                for (sub, sub_ty) in sub_patterns.iter().zip(substituted.iter()) {
                     self.check_pattern(sub, sub_ty);
                 }
             }
@@ -1562,5 +1589,79 @@ mod tests {
         // a variant-constructor arg boundary because synth_call routes
         // each arg through `check_expr` (which holds the gate).
         compile_src("enum Box<T>\n  Mk(T)\nend\nfunction f(): Box<Scalar>\n  return Mk(1)\nend");
+    }
+
+    // ----- PR-3c Task 5: generic match-pattern substitution + binding -----
+
+    #[test]
+    fn match_generic_binds_payload_type() {
+        // `case Some(x) then x` against scrutinee `Maybe<Int>` must bind
+        // `x: Int` (substituting Param(0) with the scrutinee's type-arg).
+        // Without substitution `x` would be `Param(0)` and the body's
+        // `return x` against `Int` would mismatch.
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x) then x\n    case Nothing then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_generic_payload_type_mismatch() {
+        // Body returns `x: Int` but function declares `String` — exactly
+        // one diagnostic for the arm-vs-seed mismatch.
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): String\n  return match m\n    case Some(x) then x\n    case Nothing then \"none\"\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn match_two_param_enum_binding() {
+        // `case Ok(value)` binds value: Int; `case Err(_)` discards
+        // String — sub-pattern wildcard is fine.
+        compile_src(
+            "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(r: Result<Int, String>): Int\n  return match r\n    case Ok(value) then value\n    case Err(_) then -1\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_wrong_variant_for_enum_diag() {
+        // Pattern `Some` (from Maybe) on a `Result` scrutinee — the
+        // variant doesn't belong to the scrutinee's enum.
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nenum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(r: Result<Int, String>): Int\n  return match r\n    case Some(x) then 0\n    case Ok(v) then v\n    case Err(_) then -1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Some") || diags[0].message.contains("Maybe"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_pattern_arity_mismatch_diag() {
+        // `case Some(x, y)` vs payload arity 1 — too many sub-patterns.
+        // (Parser rejects `case Some()` for empty parens, and `case Some`
+        // without parens parses as an Ident binding, not a nullary pattern,
+        // so over-arity is the only direction expressible here.)
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x, y) then 0\n    case Nothing then -1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("expected 1") && diags[0].message.contains("found 2"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_nested_variant_pattern() {
+        // `case Some(Some(x)) then x` — 2-level nested binding. The outer
+        // substitution gives the inner pattern `Maybe<Int>`, then the
+        // inner substitution binds x: Int.
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Maybe<Int>>): Int\n  return match m\n    case Some(Some(x)) then x\n    case Some(Nothing) then 0\n    case Nothing then -1\n  end\nend",
+        );
     }
 }
