@@ -49,6 +49,20 @@ impl Table {
         let b = self.resolve(b);
         match (a, b) {
             (Ty::Error, _) | (_, Ty::Error) => Ok(()),
+            // Param is a schema-only sentinel (variant signatures). Use
+            // sites substitute Param → fresh Var via `synth_ident` (Task 4)
+            // before unification can see them. If a Param ever reaches
+            // unify, the substitution is buggy — fail fast rather than
+            // silently treat `Param(0)` as unifiable with `Param(0)` from a
+            // different schema instantiation.
+            //
+            // This arm sits immediately after the Error arm so it pre-empts
+            // the Var-binding arm below: otherwise `unify(Var(α), Param(0))`
+            // would silently bind `cells[α] = Param(0)`, polluting the
+            // unification table with a schema sentinel and surfacing the
+            // bug later as a `<param #0>` diagnostic instead of at the
+            // buggy substitution site.
+            (a @ Ty::Param(_), b) | (a, b @ Ty::Param(_)) => Err((a, b)),
             // Identical-var early-out: without this, the next arm would
             // bind `cells[v] = Some(Var(v))`, which makes `resolve()`
             // infinite-loop. Latent in 3b (concrete-only) but PR-3c will
@@ -58,13 +72,6 @@ impl Table {
                 self.cells[v.0 as usize] = Some(other);
                 Ok(())
             }
-            // Param is a schema-only sentinel (variant signatures). Use
-            // sites substitute Param → fresh Var via `synth_ident` (Task 4)
-            // before unification can see them. If a Param ever reaches
-            // unify, the substitution is buggy — fail fast rather than
-            // silently treat `Param(0)` as unifiable with `Param(0)` from a
-            // different schema instantiation.
-            (a @ Ty::Param(_), b) | (a, b @ Ty::Param(_)) => Err((a, b)),
             (a, b) if a == b => Ok(()),
             (a, b) => Err((a, b)),
         }
@@ -133,5 +140,21 @@ mod tests {
         let v = t.fresh();
         t.unify(&Ty::Var(v), &Ty::Var(v)).unwrap();
         assert_eq!(t.resolve(&Ty::Var(v)), Ty::Var(v));
+    }
+
+    #[test]
+    fn unify_var_with_param_errors_without_polluting_table() {
+        // Regression for the arm-ordering bug: if the Param fail-fast arm
+        // were placed AFTER the Var-binding arm, `unify(Var(α), Param(0))`
+        // would silently bind `cells[α] = Param(0)`, polluting the table
+        // with a schema sentinel. The arm now sits before the Var arm so
+        // both directions error out and α stays unbound.
+        let mut t = Table::new();
+        let v = t.fresh();
+        assert!(t.unify(&Ty::Var(v), &Ty::Param(0)).is_err());
+        assert_eq!(t.resolve(&Ty::Var(v)), Ty::Var(v));
+        let w = t.fresh();
+        assert!(t.unify(&Ty::Param(0), &Ty::Var(w)).is_err());
+        assert_eq!(t.resolve(&Ty::Var(w)), Ty::Var(w));
     }
 }
