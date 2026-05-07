@@ -146,6 +146,44 @@ pub fn wrong_variant_for_enum(span: Span, variant_name: &str, scrut_ty: &Ty) -> 
     )
 }
 
+/// Match expression doesn't cover every variant of its enum scrutinee.
+/// `missing_variants` lists the variant names (in declaration order)
+/// that have no covering arm.
+pub fn non_exhaustive_enum(span: Span, missing_variants: &[&str]) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "non-exhaustive match: missing variant(s) {}",
+            missing_variants.join(", ")
+        ),
+    )
+}
+
+/// Match expression on `Bool` doesn't cover both `true` and `false`
+/// (and has no catch-all).
+pub fn non_exhaustive_bool(span: Span, missing: &[&str]) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "non-exhaustive match on Bool: missing {}",
+            missing.join(", ")
+        ),
+    )
+}
+
+/// Match expression on a scrutinee whose type doesn't have a finite
+/// canonical pattern set (Int, Scalar, String, Vec, Mat, Array, Dict)
+/// — exhaustiveness can only be guaranteed by an explicit catch-all
+/// pattern (`_` or an Ident binding).
+pub fn requires_wildcard(span: Span, kind: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "non-exhaustive match on `{kind}`: a wildcard pattern (`_` or binding) is required"
+        ),
+    )
+}
+
 /// Render a `Ty` for diagnostic messages. PR-3b uses base names; PR-3d's
 /// `Dimension::format_si` integrates here once units are implemented.
 fn format_ty(ty: &Ty) -> String {

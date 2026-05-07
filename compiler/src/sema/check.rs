@@ -703,6 +703,23 @@ impl<'a> TypeChecker<'a> {
                 had_arm_mismatch = true;
             }
         }
+        // Exhaustiveness check (Task 7). Resolve the scrutinee type
+        // through the unification table first so any Vars bound by
+        // arm-pattern flow are seen as their concrete instantiation —
+        // a `Maybe<Var(α)>` becomes `Maybe<Int>` once an arm pattern's
+        // payload binds α=Int, and exhaustiveness can then substitute
+        // payload params correctly.
+        let resolved_scrut = self.unify_table.resolve(&scrut_ty);
+        let exhaust_diags = crate::sema::exhaust::check_exhaustive(
+            &resolved_scrut,
+            arms,
+            scrutinee.span,
+            self.resolutions,
+            self.definitions,
+            self.variant_payloads,
+        );
+        self.diagnostics.extend(exhaust_diags);
+
         // No-cascade: same shape as synth_if. If any arm-vs-seed
         // mismatch already pushed a diag, return Ty::Error so the
         // outer check_expr doesn't fire a second one.
@@ -1662,6 +1679,134 @@ mod tests {
         // inner substitution binds x: Int.
         compile_src(
             "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Maybe<Int>>): Int\n  return match m\n    case Some(Some(x)) then x\n    case Some(Nothing) then 0\n    case Nothing then -1\n  end\nend",
+        );
+    }
+
+    // ----- PR-3c Task 7: match exhaustiveness -----
+
+    #[test]
+    fn match_enum_missing_variant_diag() {
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x) then x\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Nothing") || diags[0].message.contains("missing"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_enum_with_wildcard_passes() {
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x) then x\n    case _ then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_bool_missing_false_diag() {
+        let diags = diags_for(
+            "function f(b: Bool): Int\n  return match b\n    case true then 1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("false") || diags[0].message.contains("Bool"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_int_requires_wildcard_diag() {
+        let diags =
+            diags_for("function f(i: Int): Int\n  return match i\n    case 0 then 0\n  end\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("wildcard"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_int_with_wildcard_passes() {
+        compile_src(
+            "function f(i: Int): Int\n  return match i\n    case 0 then 0\n    case _ then 1\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_struct_with_ident_passes() {
+        compile_src(
+            "struct P\n  x: Int\n  y: Int\nend\nfunction f(p: P): Int\n  return match p\n    case s then s.x\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_function_value_not_matchable_diag() {
+        let diags = diags_for(
+            "function g(): Int\n  return 0\nend\nfunction f(): Int\n  return match g\n    case _ then 0\n  end\nend",
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("function") && d.message.contains("not allowed")),
+            "diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn match_array_passes_with_wildcard() {
+        compile_src(
+            "function f(xs: Array<Int>): Int\n  return match xs\n    case _ then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_dict_passes_with_ident() {
+        compile_src(
+            "function f(d: Dict<Int, String>): Int\n  return match d\n    case s then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_two_param_enum_missing_variant_diag() {
+        // Use a user-defined `MyResult` since the in-crate test helpers
+        // bypass `compile()`'s built-ins loading. Behavior equivalence:
+        // built-in Result is just an enum with the same shape.
+        let diags = diags_for(
+            "enum MyResult<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(r: MyResult<Int, String>): Int\n  return match r\n    case Ok(v) then v\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Err"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_nested_payload_missing_inner_variant_diag() {
+        // User-defined `Maybe<T>` (same shape as built-in Option). Outer
+        // Some/Nothing covered; inner Maybe's `Nothing` is missing at
+        // the `Some(...)` column.
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(oo: Maybe<Maybe<Int>>): Int\n  return match oo\n    case Some(Some(x)) then x\n    case Nothing then -1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Nothing") || diags[0].message.contains("missing"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_nested_payload_complete_passes() {
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(oo: Maybe<Maybe<Int>>): Int\n  return match oo\n    case Some(Some(x)) then x\n    case Some(Nothing) then 0\n    case Nothing then -1\n  end\nend",
         );
     }
 }

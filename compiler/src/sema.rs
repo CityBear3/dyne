@@ -5,6 +5,7 @@
 
 pub mod check;
 pub mod diag;
+pub mod exhaust;
 pub mod resolve;
 pub mod ty;
 pub mod unify;
