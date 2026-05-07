@@ -519,10 +519,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn synth_if(&mut self, e: &Expr, if_expr: &IfExpr) -> Ty {
-        self.check_expr(&if_expr.cond, &Ty::Bool);
+        self.check_cond(&if_expr.cond);
         let then_ty = self.synth_block(&if_expr.then_block);
         for (cond, block) in &if_expr.elseifs {
-            self.check_expr(cond, &Ty::Bool);
+            self.check_cond(cond);
             let arm_ty = self.synth_block(block);
             self.unify_or_diag(&arm_ty, &then_ty, e.span);
         }
@@ -531,6 +531,17 @@ impl<'a> TypeChecker<'a> {
             self.unify_or_diag(&arm_ty, &then_ty, e.span);
         }
         then_ty
+    }
+
+    /// Type-check a condition position. Emits the cond-specific
+    /// `non_bool_condition` diagnostic (rather than the generic "type
+    /// mismatch") so the message reads naturally for `if`/`while`.
+    fn check_cond(&mut self, cond: &Expr) {
+        let cond_ty = self.synth_expr(cond);
+        if !matches!(cond_ty, Ty::Bool | Ty::Error) {
+            self.diagnostics
+                .push(crate::sema::diag::non_bool_condition(cond.span, &cond_ty));
+        }
     }
 
     fn synth_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Ty {
@@ -599,7 +610,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn synth_while(&mut self, w: &WhileStmt) {
-        self.check_expr(&w.cond, &Ty::Bool);
+        self.check_cond(&w.cond);
         self.synth_block(&w.body);
     }
 

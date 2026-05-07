@@ -39,7 +39,6 @@ pub fn op_type_error(span: Span, op_desc: &str, ty: &Ty) -> Diagnostic {
     )
 }
 
-#[allow(dead_code)] // Used by control-flow rules in Task 6.
 pub fn non_bool_condition(span: Span, ty: &Ty) -> Diagnostic {
     Diagnostic::type_error(
         span,

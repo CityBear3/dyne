@@ -65,9 +65,11 @@ impl Dimension {
 }
 
 /// Index into a unification table. Allocated by `unify::Table::fresh()`
-/// (added in Task 6).
+/// — that's the only legitimate constructor, so the inner index is
+/// `pub(crate)` rather than `pub`. External consumers can match on
+/// `Ty::Var(_)` but cannot fabricate or inspect indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TypeVarId(pub u32);
+pub struct TypeVarId(pub(crate) u32);
 
 /// Stored per enum-variant DefId in `TypedProgram::variant_payloads`.
 /// Pairs the parent enum's DefId with the lowered payload types so a
