@@ -5,8 +5,6 @@
 //! - PR-3d: `Dimension` arithmetic (mul, div, pow), unit propagation through operators
 //! - PR-3c: enum type-argument instantiation via `TypeVarId`
 
-#![allow(dead_code)] // Some Ty variants (Var, Function, etc.) are consumed in Tasks 3-6.
-
 use crate::ast::{Type, TypeArg, TypeKind};
 use crate::diag::Diagnostic;
 use crate::ids::DefId;
