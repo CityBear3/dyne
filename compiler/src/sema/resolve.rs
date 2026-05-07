@@ -337,6 +337,14 @@ fn resolve_expr(r: &mut Resolver, e: &Expr) {
     }
 }
 
+// NOTE: this function is currently unreachable from parsed input — the Stage
+// 1/2 parser does not yet construct `ExprKind::Lambda` nodes (no surface
+// syntax for `(x) -> x + 1` or similar). The walk is in place so that when
+// lambda parsing lands (likely PR-3b/3c alongside generic-function support
+// or first-class function values), name resolution Just Works without
+// further changes here. End-to-end tests for lambda capture-at-definition-
+// site semantics will be added at that point; until then this function is
+// covered only by inspection.
 fn resolve_lambda(r: &mut Resolver, l: &LambdaExpr) {
     r.table.enter_scope();
     for p in &l.params {
@@ -635,5 +643,167 @@ mod tests {
         let prog = parse_src(src);
         let (_resolutions, _defs, diags) = resolve_program(&prog);
         assert!(diags.iter().any(|d| d.message.contains("Jsut")));
+    }
+
+    // ----- Coverage gaps surfaced by /review (test-coverage-reviewer) -----
+    // The following tests pin resolver branches and behaviors that the
+    // initial Task 4 test list missed.
+
+    #[test]
+    fn resolve_for_iter_loop_var_visible_in_body() {
+        // Parser produces ForStmt::Iter for `for x in iter do ... end`.
+        let src = "function f(xs: Array<Int>): Int\n  let total: Int = 0\n  for x in xs do\n    total = total + x\n  end\n  return total\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_for_iterkv_loop_vars_visible_in_body() {
+        // Parser produces ForStmt::IterKV for `for k, v in pairs do ... end`.
+        let src = "function f(pairs: Dict<Int, Int>): Int\n  let total: Int = 0\n  for k, v in pairs do\n    total = total + k + v\n  end\n  return total\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_while_condition_uses_param_and_body_can_assign() {
+        // Pins resolve_while: cond resolves outer name; body's Assign
+        // statement resolves both LHS and RHS in the surrounding scope.
+        let src = "function f(n: Int): Int\n  let i: Int = 0\n  while i < n do\n    i = i + 1\n  end\n  return i\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_assign_to_undefined_name_produces_diagnostic() {
+        // The Assign LHS goes through resolve_name_use; an undefined LHS
+        // must produce a sema diagnostic.
+        let src = "function f(): Int\n  undefined = 1\n  return 0\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags.iter().any(|d| d.message.contains("undefined")),
+            "diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn resolve_struct_literal_name_resolves_to_definition() {
+        // resolve_expr's StructLit arm calls resolve_name_use on the struct
+        // constructor; this test pins both the positive path...
+        let src =
+            "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Point { x: 1.0, y: 2.0 }";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_typo_in_struct_literal_name_produces_diagnostic() {
+        // ...and the negative path: a typo in the struct constructor name
+        // must produce an undefined-name diagnostic.
+        let src =
+            "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Pint { x: 1.0, y: 2.0 }";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags.iter().any(|d| d.message.contains("Pint")),
+            "diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn resolve_pattern_binding_does_not_leak_across_match_arms() {
+        // resolve_match_arm pushes a fresh scope per arm; a pattern binding
+        // in arm 1 must NOT be visible in arm 2.
+        let src = "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(m: Maybe): Int\n  return match m\n    case Just(x) then 0\n    case Nothing then x\n  end\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("undefined name `x`")),
+            "expected x to be undefined in second arm, got {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn resolve_multiple_lets_chain_in_dependency_order() {
+        // Each top-level let walks its RHS first, then introduces its name,
+        // so a later let can refer to an earlier one (forward refs across
+        // top-level lets are still rejected — covered separately).
+        let src = "let a: Int = 1\nlet b: Int = a + 1";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_duplicate_function_name_produces_diagnostic() {
+        // Both functions go through hoist_top_level → define_or_report;
+        // the second produces a duplicate-name diagnostic.
+        let src = "function f(): Int\n  return 0\nend\nfunction f(): Int\n  return 1\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("`f`"));
+    }
+
+    #[test]
+    fn resolve_function_then_let_with_same_name_collides() {
+        // Cross-kind same-name collision at top level: pins the "single
+        // namespace at top level" invariant.
+        let src = "function foo(): Int\n  return 0\nend\nlet foo: Int = 1";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags.iter().any(|d| d.message.contains("`foo`")),
+            "diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn resolve_let_then_function_with_same_name_collides() {
+        // Same as above, opposite ordering. Note: hoist_top_level runs
+        // first and registers the function; then resolve_item walks the
+        // top-level let, whose name collides with the already-registered
+        // function. So the diag fires on the let.
+        let src = "let foo: Int = 1\nfunction foo(): Int\n  return 0\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags.iter().any(|d| d.message.contains("`foo`")),
+            "diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn resolve_same_scope_let_let_inside_block_collides() {
+        // Two lets with the same name inside a function body share a
+        // scope (the function body scope) and must collide.
+        let src = "function f(): Int\n  let x: Int = 1\n  let x: Int = 2\n  return x\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("`x`"));
+    }
+
+    #[test]
+    fn resolve_param_let_collision_in_function_body() {
+        // Function params and the function body share a scope (DD line 197);
+        // a let with the same name as a param must collide.
+        let src = "function f(x: Int): Int\n  let x: Int = 1\n  return x\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("`x`"));
     }
 }
