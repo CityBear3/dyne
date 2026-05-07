@@ -27,10 +27,8 @@ pub fn type_mismatch_full(span: Span, expected: &Ty, actual: &Ty) -> Diagnostic 
 }
 
 /// Per-operator structural mismatch (e.g. "arithmetic operands must both
-/// be Int or Scalar"). The second span lets future revisions point at the
-/// disagreeing operand; not currently used for labelling but kept in the
-/// signature so callers don't have to lose the location.
-pub fn type_mismatch(span: Span, _other_span: Span, msg: &str) -> Diagnostic {
+/// be Int or Scalar").
+pub fn type_mismatch(span: Span, msg: &str) -> Diagnostic {
     Diagnostic::type_error(span, msg.to_string())
 }
 

@@ -116,14 +116,12 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         }
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                self.synth_arith(&lt, &rt, l.span, r.span)
-            }
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => self.synth_arith(&lt, &rt, l.span),
             BinOp::Pow => self.synth_pow(&lt, &rt, l.span, r.span),
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                 self.synth_comparison(&lt, &rt, l.span)
             }
-            BinOp::And | BinOp::Or => self.synth_logical(&lt, &rt, l.span),
+            BinOp::And | BinOp::Or => self.synth_logical(&lt, &rt, l.span, r.span),
         }
     }
 
@@ -167,7 +165,7 @@ impl<'a> TypeChecker<'a> {
     /// Arithmetic on `Int` / `Scalar`. Vec/Mat arithmetic is valid dyne but
     /// lands in Task 6; here it returns `Ty::Error` without a diagnostic so
     /// the no-cascade invariant holds.
-    fn synth_arith(&mut self, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
+    fn synth_arith(&mut self, l: &Ty, r: &Ty, l_span: Span) -> Ty {
         match (l, r) {
             (Ty::Int, Ty::Int) => Ty::Int,
             (Ty::Int, Ty::Scalar(d)) | (Ty::Scalar(d), Ty::Int) if d.is_dimensionless() => {
@@ -179,7 +177,6 @@ impl<'a> TypeChecker<'a> {
             _ => {
                 self.diagnostics.push(crate::sema::diag::type_mismatch(
                     l_span,
-                    r_span,
                     "arithmetic operands must both be Int or Scalar",
                 ));
                 Ty::Error
@@ -218,24 +215,31 @@ impl<'a> TypeChecker<'a> {
         } else {
             self.diagnostics.push(crate::sema::diag::type_mismatch(
                 l_span,
-                l_span,
                 "comparison operands must have the same primitive type",
             ));
             Ty::Error
         }
     }
 
-    fn synth_logical(&mut self, l: &Ty, r: &Ty, l_span: Span) -> Ty {
+    fn synth_logical(&mut self, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
         if matches!(l, Ty::Bool) && matches!(r, Ty::Bool) {
-            Ty::Bool
-        } else {
-            self.diagnostics.push(crate::sema::diag::op_type_error(
-                l_span,
-                "logical (`&&` / `||`)",
-                l,
-            ));
-            Ty::Error
+            return Ty::Bool;
         }
+        // Point the diagnostic at the actual non-Bool operand rather than
+        // unconditionally at `l`. When both sides are non-Bool we pick the
+        // left; that's a reasonable default and the message names the
+        // offending type.
+        let (offender, span) = if !matches!(l, Ty::Bool) {
+            (l, l_span)
+        } else {
+            (r, r_span)
+        };
+        self.diagnostics.push(crate::sema::diag::op_type_error(
+            span,
+            "logical (`&&` / `||`)",
+            offender,
+        ));
+        Ty::Error
     }
 
     fn unify_or_diag(&mut self, actual: &Ty, expected: &Ty, span: Span) {
@@ -435,5 +439,59 @@ mod tests {
         let diags = diags_for("function f(): Int\n  return true\nend");
         assert_eq!(diags.len(), 1, "diags: {:?}", diags);
         assert!(diags[0].message.contains("type mismatch"));
+    }
+
+    // ----- Coverage gaps surfaced by code-quality review -----
+
+    #[test]
+    fn logical_and_diag_names_the_non_bool_operand() {
+        // Regression for the `synth_logical` offender bug: when only the
+        // right side is non-Bool, the diagnostic must name the non-Bool
+        // type (`Int`), not the valid-Bool left side.
+        let diags = diags_for("function f(): Bool\n  return true and 1\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("`Int`"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn pow_int_int_returns_int() {
+        // Pow base = Int, exponent = Int → Int. Function expects Int return,
+        // so unify succeeds.
+        compile_src("function f(): Int\n  return 2 ^ 3\nend");
+    }
+
+    #[test]
+    fn pow_bool_base_emits_diag() {
+        // Pow rejects Bool base; the message names the offending side.
+        let diags = diags_for("function f(): Int\n  return true ^ 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("base"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn ident_resolves_to_top_level_let() {
+        // Top-level `let pi: Scalar = 3.14` populates `def_types[pi]` in
+        // signature_pass; reading `pi` from inside a function body must
+        // produce `Ty::Scalar(ZERO)` (matching the function's declared
+        // return type).
+        compile_src("let pi: Scalar = 3.14\nfunction f(): Scalar\n  return pi\nend");
+    }
+
+    #[test]
+    fn no_cascade_in_chained_arithmetic() {
+        // `1 + "x" + 2` parses as `(1 + "x") + 2`. The inner BinOp emits
+        // exactly one diag; the outer BinOp's early-exit on Ty::Error
+        // suppresses a second one.
+        let diags = diags_for("function f(): Int\n  return 1 + \"x\" + 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("arithmetic"));
     }
 }
