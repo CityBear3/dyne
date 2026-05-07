@@ -58,6 +58,13 @@ impl Table {
                 self.cells[v.0 as usize] = Some(other);
                 Ok(())
             }
+            // Param is a schema-only sentinel (variant signatures). Use
+            // sites substitute Param → fresh Var via `synth_ident` (Task 4)
+            // before unification can see them. If a Param ever reaches
+            // unify, the substitution is buggy — fail fast rather than
+            // silently treat `Param(0)` as unifiable with `Param(0)` from a
+            // different schema instantiation.
+            (a @ Ty::Param(_), b) | (a, b @ Ty::Param(_)) => Err((a, b)),
             (a, b) if a == b => Ok(()),
             (a, b) => Err((a, b)),
         }

@@ -54,6 +54,17 @@ pub fn wrong_arity(span: Span, expected: usize, actual: usize) -> Diagnostic {
     )
 }
 
+/// Generic-type instantiation arity mismatch, e.g. `Result<Int>` when the
+/// declaration is `enum Result<T, E>`. Used by `lower_type` to point at the
+/// annotation site rather than letting the mismatch cascade through later
+/// passes as a vague "type error".
+pub fn wrong_type_arity(span: Span, name: &str, expected: usize, actual: usize) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("`{name}` expects {expected} type argument(s), but {actual} were provided"),
+    )
+}
+
 pub fn not_callable(span: Span, ty: &Ty) -> Diagnostic {
     Diagnostic::type_error(span, format!("type `{}` is not callable", format_ty(ty)))
 }
@@ -128,6 +139,12 @@ fn format_ty(ty: &Ty) -> String {
         Ty::Struct(_) => "<struct>".into(),
         Ty::Enum(_, _) => "<enum>".into(),
         Ty::Var(_) => "?".into(),
+        // Param should never reach diagnostic rendering — `synth_ident`
+        // substitutes Param → fresh Var before the type can leak into a
+        // diagnostic. The arm exists to keep `format_ty` exhaustive, and
+        // the message names the schema position so a regression that lets
+        // Param escape produces something readable rather than a panic.
+        Ty::Param(i) => format!("<param #{i}>"),
         Ty::Error => "<error>".into(),
     }
 }

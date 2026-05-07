@@ -21,6 +21,11 @@ pub struct DefinitionInfo {
     pub kind: DefKind,
     pub span: Span,
     pub name: String,
+    /// Type-parameter names declared on the definition. Empty for non-generic
+    /// definitions and for kinds other than `Enum`. Read by `lower_type` to
+    /// validate user generic instantiations (`Result<Int, String>`) and by
+    /// Task 3 to populate variant signature schemas with `Ty::Param`.
+    pub type_params: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,8 +120,15 @@ impl Resolver {
         match self.table.define(name.clone(), def_id, span) {
             Ok(()) => {
                 self.next_def += 1;
-                self.definitions
-                    .insert(def_id, DefinitionInfo { kind, span, name });
+                self.definitions.insert(
+                    def_id,
+                    DefinitionInfo {
+                        kind,
+                        span,
+                        name,
+                        type_params: Vec::new(),
+                    },
+                );
                 Some(def_id)
             }
             Err(prev_span) => {
@@ -150,7 +162,16 @@ fn hoist_top_level(r: &mut Resolver, prog: &Program) {
                 r.define_or_report(s.name.clone(), DefKind::Struct, s.span);
             }
             Item::Enum(e) => {
-                r.define_or_report(e.name.clone(), DefKind::Enum, e.span);
+                // Capture the DefId so we can attach the enum's `type_params`
+                // declaration. `lower_type` reads `info.type_params.len()` to
+                // validate user-defined generic instantiations such as
+                // `Result<Int, String>`; Task 3 will use the same field to
+                // build variant signature schemas with `Ty::Param(i)`.
+                if let Some(enum_def_id) = r.define_or_report(e.name.clone(), DefKind::Enum, e.span)
+                    && let Some(info) = r.definitions.get_mut(&enum_def_id)
+                {
+                    info.type_params = e.type_params.clone();
+                }
                 for variant in &e.variants {
                     r.define_or_report(variant.name.clone(), DefKind::EnumVariant, variant.span);
                 }
