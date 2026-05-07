@@ -2,18 +2,21 @@
 
 use crate::ast::expr::Expr;
 use crate::ast::ty::Type;
+use crate::ids::NodeId;
 use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
     pub span: Span,
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,13 +77,16 @@ mod tests {
                 ty: Type {
                     kind: TypeKind::Named("Scalar".into()),
                     span: Span::new(0, 6),
+                    id: NodeId(0),
                 },
                 init: Expr {
                     kind: ExprKind::FloatLit(1.0),
                     span: Span::new(10, 13),
+                    id: NodeId(0),
                 },
             }),
             span: Span::new(0, 13),
+            id: NodeId(0),
         };
         if let StmtKind::Let(l) = &stmt.kind {
             assert_eq!(l.name, "x");

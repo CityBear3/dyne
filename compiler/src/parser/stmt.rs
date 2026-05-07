@@ -33,6 +33,7 @@ pub(crate) fn parse_program(p: &mut Parser) -> Result<Program, Diagnostic> {
     Ok(Program {
         items,
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -93,6 +94,7 @@ fn parse_struct_def(p: &mut Parser) -> Result<StructDef, Diagnostic> {
             name: fname,
             ty,
             span,
+            id: p.fresh_node_id(),
         });
         p.eat(&TokenKind::Comma);
         if !matches!(
@@ -115,6 +117,7 @@ fn parse_struct_def(p: &mut Parser) -> Result<StructDef, Diagnostic> {
         name,
         fields,
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -158,6 +161,7 @@ fn parse_enum_def(p: &mut Parser) -> Result<EnumDef, Diagnostic> {
         type_params,
         variants,
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -194,6 +198,7 @@ fn parse_variant_decl(p: &mut Parser) -> Result<EnumVariant, Diagnostic> {
         name,
         payload,
         span: Span::merge(start, end_span),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -229,6 +234,7 @@ fn parse_let_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     Ok(Stmt {
         kind: StmtKind::Let(LetStmt { name, ty, init }),
         span,
+        id: p.fresh_node_id(),
     })
 }
 
@@ -244,6 +250,7 @@ fn parse_assign_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     Ok(Stmt {
         kind: StmtKind::Assign(name, expr),
         span,
+        id: p.fresh_node_id(),
     })
 }
 
@@ -257,6 +264,7 @@ fn parse_return_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
         return Ok(Stmt {
             kind: StmtKind::Return(None),
             span: start,
+            id: p.fresh_node_id(),
         });
     }
     let expr = parse_expr(p)?;
@@ -264,6 +272,7 @@ fn parse_return_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     Ok(Stmt {
         kind: StmtKind::Return(Some(expr)),
         span,
+        id: p.fresh_node_id(),
     })
 }
 
@@ -273,6 +282,7 @@ fn parse_expr_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     Ok(Stmt {
         kind: StmtKind::Expr(expr),
         span,
+        id: p.fresh_node_id(),
     })
 }
 
@@ -287,6 +297,7 @@ fn parse_while_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     Ok(Stmt {
         kind: StmtKind::While(WhileStmt { cond, body }),
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -321,6 +332,7 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
                 body,
             }),
             span: Span::merge(start, end),
+            id: p.fresh_node_id(),
         });
     }
 
@@ -350,6 +362,7 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
                 body,
             }),
             span: Span::merge(start, end),
+            id: p.fresh_node_id(),
         });
     }
 
@@ -367,6 +380,7 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
             body,
         }),
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -397,6 +411,7 @@ fn parse_function_def(p: &mut Parser) -> Result<FunctionDef, Diagnostic> {
         return_ty,
         body,
         span: Span::merge(start, end),
+        id: p.fresh_node_id(),
     })
 }
 
@@ -414,7 +429,12 @@ fn parse_param(p: &mut Parser) -> Result<Param, Diagnostic> {
     p.expect(&TokenKind::Colon, "':'")?;
     let ty = parse_type(p)?;
     let span = Span::merge(name_span, ty.span);
-    Ok(Param { name, ty, span })
+    Ok(Param {
+        name,
+        ty,
+        span,
+        id: p.fresh_node_id(),
+    })
 }
 
 /// How `parse_comma_list` should treat an empty list (closing token immediately
@@ -504,6 +524,7 @@ where
     Ok(Block {
         stmts,
         span: Span::merge(start, end_span),
+        id: p.fresh_node_id(),
     })
 }
 

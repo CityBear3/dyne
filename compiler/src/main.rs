@@ -25,12 +25,14 @@ fn main() -> ExitCode {
     };
     let source = SourceFile::new(text);
     match compile(source.text()) {
-        Ok(program) => {
-            println!("parsed {} item(s)", program.items.len());
+        Ok(typed) => {
+            println!("parsed {} item(s)", typed.program.items.len());
             ExitCode::SUCCESS
         }
-        Err(err) => {
-            eprintln!("{}", err.render(&source));
+        Err(diags) => {
+            for d in &diags {
+                eprintln!("{}", d.render(&source));
+            }
             ExitCode::from(1)
         }
     }

@@ -14,7 +14,7 @@ function force(q: Vec<3>): Vec<3>
     return -k * q
 end
 ";
-    let p = compile(src).unwrap();
+    let p = compile(src).unwrap().program;
     assert_eq!(p.items.len(), 3);
     match &p.items[2] {
         Item::Function(f) => {
@@ -47,7 +47,7 @@ function sign(x: Scalar): Int
     end
 end
 ";
-    let p = compile(src).unwrap();
+    let p = compile(src).unwrap().program;
     assert_eq!(p.items.len(), 1);
 }
 
@@ -62,28 +62,28 @@ function sum(n: Int): Int
     return total
 end
 ";
-    let p = compile(src).unwrap();
+    let p = compile(src).unwrap().program;
     assert_eq!(p.items.len(), 1);
 }
 
 #[test]
 fn units_in_type_annotation() {
     let src = "let mass: Scalar<kg> = 1.5";
-    let p = compile(src).unwrap();
+    let p = compile(src).unwrap().program;
     assert_eq!(p.items.len(), 1);
 }
 
 #[test]
 fn stage2_struct_definition_compiles() {
     let src = "struct State\n  q: Vec<3>\n  p: Vec<3>\n  t: Scalar\nend";
-    let prog = dyne::compile(src).unwrap();
+    let prog = dyne::compile(src).unwrap().program;
     assert_eq!(prog.items.len(), 1);
 }
 
 #[test]
 fn stage2_enum_with_generic_compiles() {
     let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend";
-    let prog = dyne::compile(src).unwrap();
+    let prog = dyne::compile(src).unwrap().program;
     assert_eq!(prog.items.len(), 1);
 }
 
@@ -91,20 +91,55 @@ fn stage2_enum_with_generic_compiles() {
 fn stage2_struct_literal_in_let_compiles() {
     let src =
         "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Point { x: 1.0, y: 2.0 }";
-    let prog = dyne::compile(src).unwrap();
+    let prog = dyne::compile(src).unwrap().program;
     assert_eq!(prog.items.len(), 2);
 }
 
 #[test]
 fn stage2_match_with_literal_payload_compiles() {
-    let src = "function classify(n: Option<Int>): Int\n  return match n\n    case Some(0) then 0\n    case Some(_) then 1\n    case None then -1\n  end\nend";
-    let prog = dyne::compile(src).unwrap();
-    assert_eq!(prog.items.len(), 1);
+    // Adapted from a previous version that referenced the built-in
+    // `Option<Int>`. Built-in enums (Option, Result) land in PR-3c; until
+    // then this test uses a user-defined enum to exercise the same
+    // match-with-literal-pattern code paths.
+    let src = "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction classify(n: Maybe): Int\n  return match n\n    case Just(0) then 0\n    case Just(_) then 1\n    case Nothing then -1\n  end\nend";
+    let prog = dyne::compile(src).unwrap().program;
+    assert_eq!(prog.items.len(), 2);
 }
 
 #[test]
 fn stage2_float_pattern_rejected_e2e() {
     let src = "function f(x: Scalar): Int\n  return match x\n    case 0.5 then 1\n    case _ then 0\n  end\nend";
     let err = dyne::compile(src).unwrap_err();
-    assert!(err.message.contains("floating-point"));
+    assert!(err[0].message.contains("floating-point"));
+}
+
+#[test]
+fn compile_undefined_name_yields_sema_diagnostic() {
+    let src = "function f(): Int\n  return undefined_var\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    // One undefined reference → exactly one diagnostic.
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert_eq!(diags[0].phase, dyne::diag::Phase::Sema);
+    assert_eq!(diags[0].level, dyne::diag::Level::Error);
+    assert!(diags[0].message.contains("undefined_var"));
+}
+
+#[test]
+fn compile_multiple_undefined_names_emits_multiple_diagnostics() {
+    let src = "function f(): Int\n  return a + b\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    // Two undefined references → exactly two diagnostics, one per name.
+    assert_eq!(diags.len(), 2, "got {:?}", diags);
+    assert!(diags[0].message.contains("`a`"));
+    assert!(diags[1].message.contains("`b`"));
+}
+
+#[test]
+fn compile_duplicate_top_level_definition_yields_diagnostic() {
+    let src = "let x: Int = 1\nlet x: Int = 2";
+    let diags = dyne::compile(src).unwrap_err();
+    // Single duplicate → exactly one diagnostic.
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert_eq!(diags[0].phase, dyne::diag::Phase::Sema);
+    assert!(diags[0].message.contains("`x`"));
 }

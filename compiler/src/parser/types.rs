@@ -24,6 +24,7 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, Diagnostic> {
         return Ok(Type {
             kind: TypeKind::Function(params, Box::new(ret)),
             span: Span::merge(start, end),
+            id: p.fresh_node_id(),
         });
     }
 
@@ -46,11 +47,13 @@ pub(crate) fn parse_type(p: &mut Parser) -> Result<Type, Diagnostic> {
         Ok(Type {
             kind: TypeKind::Generic(name, args),
             span: Span::merge(ident_span, end_span),
+            id: p.fresh_node_id(),
         })
     } else {
         Ok(Type {
             kind: TypeKind::Named(name),
             span: ident_span,
+            id: p.fresh_node_id(),
         })
     }
 }
@@ -125,6 +128,7 @@ fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
             lhs = UnitExpr {
                 kind: UnitExprKind::Mul(Box::new(lhs), Box::new(rhs)),
                 span,
+                id: p.fresh_node_id(),
             };
         } else if p.eat(&TokenKind::Slash) {
             let rhs = parse_unit_factor(p)?;
@@ -132,6 +136,7 @@ fn parse_unit_expr(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
             lhs = UnitExpr {
                 kind: UnitExprKind::Div(Box::new(lhs), Box::new(rhs)),
                 span,
+                id: p.fresh_node_id(),
             };
         } else {
             break;
@@ -154,6 +159,7 @@ fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
     let mut expr = UnitExpr {
         kind: UnitExprKind::Atom(atom),
         span: atom_span,
+        id: p.fresh_node_id(),
     };
     if p.eat(&TokenKind::Caret) {
         let n = match p.peek_kind() {
@@ -170,6 +176,7 @@ fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
         expr = UnitExpr {
             kind: UnitExprKind::Pow(Box::new(expr), n),
             span,
+            id: p.fresh_node_id(),
         };
     }
     Ok(expr)
