@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use crate::ast::{Item, Program};
 use crate::diag::Diagnostic;
 use crate::ids::{DefId, NodeId};
-use crate::sema::resolve::{DefKind, DefinitionTable, ResolveTable};
+use crate::sema::resolve::{BindingTable, DefKind, DefinitionTable, ResolveTable};
 use crate::sema::ty::{Ty, VariantPayload, lower_type};
 
 /// Per-expression types keyed by `NodeId`. Populated in Pass 2 by
@@ -42,8 +42,16 @@ pub type VariantPayloadMap = HashMap<DefId, VariantPayload>;
 pub struct TypedProgram {
     pub program: Program,
     pub types: TypeTable,
+    /// Use-site NodeId → DefId. Maps every resolved name *use* to the
+    /// definition it refers to. Orthogonal to `binding_def_ids` below.
     pub resolutions: ResolveTable,
     pub definitions: DefinitionTable,
+    /// Binding-intro NodeId → DefId. Maps every binding *introduction* to
+    /// the DefId allocated for it. Populated by `define_or_report` for
+    /// Function, Struct, Enum, EnumVariant, Param, LocalLet, TopLevelLet,
+    /// and PatternBinding intro sites. Loop-var bindings are not yet
+    /// recorded; consult `check.rs::loop_var_def_id` for those.
+    pub binding_def_ids: BindingTable,
     /// Per-DefId types for `Function` (`Ty::Function` variant), `Param`,
     /// `LocalLet`, `TopLevelLet`, `LoopVar`, `PatternBinding`. Populated by
     /// Pass 1 (`signature_pass`) for top-level signatures and params; later
@@ -62,6 +70,7 @@ impl TypedProgram {
         types: TypeTable,
         resolutions: ResolveTable,
         definitions: DefinitionTable,
+        binding_def_ids: BindingTable,
         def_types: DefTypeMap,
         struct_fields: StructFieldMap,
         variant_payloads: VariantPayloadMap,
@@ -71,6 +80,7 @@ impl TypedProgram {
             types,
             resolutions,
             definitions,
+            binding_def_ids,
             def_types,
             struct_fields,
             variant_payloads,
@@ -84,14 +94,19 @@ impl TypedProgram {
 /// Pass 2 (Tasks 4–6) can type-check function bodies with mutual-recursion
 /// support. Pass 2 currently leaves the per-expression `types` table empty.
 pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
-    let (resolutions, definitions, mut diags) = resolve::resolve_program(&program);
+    let (resolutions, definitions, binding_def_ids, mut diags) = resolve::resolve_program(&program);
 
     // Pass 1: lower top-level signatures (functions, structs, enum variants,
     // top-level lets, function params). Continues even when `diags` already
     // contains resolve errors — `lower_type`'s `Ty::Error` sentinel
     // suppresses cascading diagnostics from sub-trees that failed earlier.
-    let (mut def_types, struct_fields, variant_payloads) =
-        signature_pass(&program, &resolutions, &definitions, &mut diags);
+    let (mut def_types, struct_fields, variant_payloads) = signature_pass(
+        &program,
+        &resolutions,
+        &definitions,
+        &binding_def_ids,
+        &mut diags,
+    );
 
     // Pass 2: bidirectional type checking of function bodies and top-level
     // let init expressions. Task 4 lands literal/ident/operator rules; later
@@ -100,6 +115,7 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
         &program,
         &resolutions,
         &definitions,
+        &binding_def_ids,
         &mut def_types,
         &struct_fields,
         &variant_payloads,
@@ -114,6 +130,7 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
         types,
         resolutions,
         definitions,
+        binding_def_ids,
         def_types,
         struct_fields,
         variant_payloads,
@@ -128,6 +145,7 @@ fn signature_pass(
     program: &Program,
     resolutions: &ResolveTable,
     definitions: &DefinitionTable,
+    binding_def_ids: &BindingTable,
     diags: &mut Vec<Diagnostic>,
 ) -> (DefTypeMap, StructFieldMap, VariantPayloadMap) {
     let mut def_types: DefTypeMap = HashMap::new();
@@ -178,22 +196,12 @@ fn signature_pass(
                     .collect();
                 let ret_ty = lower_type(&f.return_ty, resolutions, definitions, diags);
                 // Param DefIds aren't in `name_to_def` (function-scoped, not
-                // hoisted). Recover each via `DefinitionTable` matching
-                // `(DefKind::Param, name, span)` and reuse the already-lowered
-                // Ty so `lower_type` runs once per param. O(params ×
-                // definitions); acceptable for dyne-scale code. A future PR
-                // can add a `param_def_ids: HashMap<NodeId, DefId>` index to
-                // Resolver output if profiling shows it hot.
+                // hoisted). Look each up by its AST NodeId via
+                // `binding_def_ids` (populated by the resolver when the
+                // param was introduced). O(params), no scan over
+                // `DefinitionTable`.
                 for (p, ty) in f.params.iter().zip(param_tys.iter()) {
-                    let Some(p_def_id) = definitions
-                        .iter()
-                        .find(|(_, info)| {
-                            matches!(info.kind, DefKind::Param)
-                                && info.name == p.name
-                                && info.span == p.span
-                        })
-                        .map(|(id, _)| *id)
-                    else {
+                    let Some(p_def_id) = binding_def_ids.get(&p.id).copied() else {
                         continue;
                     };
                     def_types.insert(p_def_id, ty.clone());

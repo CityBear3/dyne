@@ -338,7 +338,7 @@ mod tests {
 
     fn lower_first_let_ty(src: &str) -> (Ty, Vec<Diagnostic>) {
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let item = &prog.items[0];
         let ty = match item {
@@ -413,7 +413,7 @@ mod tests {
     fn lower_user_struct_returns_struct_def_id() {
         let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = 0";
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let p_let = &prog.items[1];
         let ty = match p_let {
@@ -442,7 +442,7 @@ mod tests {
         // `Result<Int, String>` lowers to `Ty::Enum(result_def, [Int, String])`.
         let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nlet r: Result<Int, String> = 0";
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let item = &prog.items[1];
         let ty = match item {
@@ -462,7 +462,7 @@ mod tests {
         // expected count (2) so the user can correct the annotation.
         let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nlet r: Result<Int> = 0";
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let item = &prog.items[1];
         let ty = match item {
@@ -479,7 +479,7 @@ mod tests {
         // `Maybe<Int, String>` against `enum Maybe<T>` — diag must name 1.
         let src = "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nlet m: Maybe<Int, String> = 0";
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let item = &prog.items[1];
         let ty = match item {
@@ -497,7 +497,7 @@ mod tests {
         // Maybe<Int> recursively before wrapping in the outer Result.
         let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nenum Maybe<T>\n  Just(T)\n  Nothing\nend\nlet x: Result<Maybe<Int>, String> = 0";
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let item = &prog.items[2];
         let ty = match item {
@@ -524,7 +524,7 @@ mod tests {
         // emit "not a generic type" rather than silently lowering.
         let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point<Int> = 0";
         let prog = parse(tokenize(src).unwrap()).unwrap();
-        let (resolutions, defs, _) = resolve_program(&prog);
+        let (resolutions, defs, _, _) = resolve_program(&prog);
         let mut diags = Vec::new();
         let item = &prog.items[1];
         let ty = match item {

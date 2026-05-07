@@ -14,6 +14,15 @@ use crate::source::Span;
 /// to.
 pub type ResolveTable = HashMap<NodeId, DefId>;
 
+/// Maps a binding-introducing AST node's NodeId to the DefId allocated for
+/// that binding. Orthogonal to `ResolveTable`, which maps use-site NodeIds to
+/// definition DefIds. Populated by `define_or_report` for Function, Struct,
+/// Enum, EnumVariant, Param, LocalLet, TopLevelLet, and PatternBinding intro
+/// sites. Loop-var bindings are not yet recorded — `ForStmt`'s AST has no
+/// per-binding NodeId so the legacy `(kind, name, span)` linear scan in
+/// `check.rs::loop_var_def_id` covers them until a future PR plumbs ids.
+pub type BindingTable = HashMap<NodeId, DefId>;
+
 /// Metadata stored per definition. Stage 3a only records the kind and
 /// declaration span; later stages will add signatures.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,6 +106,7 @@ pub(crate) struct Resolver {
     next_def: u32,
     pub(crate) resolutions: ResolveTable,
     pub(crate) definitions: DefinitionTable,
+    pub(crate) binding_def_ids: BindingTable,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -107,6 +117,7 @@ impl Resolver {
             next_def: 0,
             resolutions: ResolveTable::new(),
             definitions: DefinitionTable::new(),
+            binding_def_ids: BindingTable::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -115,7 +126,21 @@ impl Resolver {
     /// same-scope collision, push a duplicate-name diagnostic and return
     /// `None` *without* allocating a fresh `DefId` — the `definitions` table
     /// must only contain entries reachable through some scope.
-    fn define_or_report(&mut self, name: String, kind: DefKind, span: Span) -> Option<DefId> {
+    ///
+    /// `intro_node_id` is the NodeId of the AST node introducing the binding
+    /// (e.g. `FunctionDef.id`, `Param.id`, `Pattern.id`). On success, the
+    /// resolver also records `intro_node_id → def_id` in `binding_def_ids`
+    /// so downstream passes can recover the DefId in O(1) instead of
+    /// scanning `DefinitionTable` for a `(kind, name, span)` match. Pass
+    /// `None` when the AST does not yet carry a per-binding NodeId — today
+    /// only `ForStmt` loop variables fall into this bucket.
+    fn define_or_report(
+        &mut self,
+        name: String,
+        kind: DefKind,
+        span: Span,
+        intro_node_id: Option<NodeId>,
+    ) -> Option<DefId> {
         let def_id = DefId(self.next_def);
         match self.table.define(name.clone(), def_id, span) {
             Ok(()) => {
@@ -129,6 +154,9 @@ impl Resolver {
                         type_params: Vec::new(),
                     },
                 );
+                if let Some(id) = intro_node_id {
+                    self.binding_def_ids.insert(id, def_id);
+                }
                 Some(def_id)
             }
             Err(prev_span) => {
@@ -143,23 +171,30 @@ impl Resolver {
 /// Walk a Program and produce its resolution tables alongside any sema
 /// diagnostics. Programs with undefined names produce diagnostics; well-
 /// resolved programs return an empty `Vec<Diagnostic>`.
-pub fn resolve_program(prog: &Program) -> (ResolveTable, DefinitionTable, Vec<Diagnostic>) {
+pub fn resolve_program(
+    prog: &Program,
+) -> (ResolveTable, DefinitionTable, BindingTable, Vec<Diagnostic>) {
     let mut r = Resolver::new();
     hoist_top_level(&mut r, prog);
     for item in &prog.items {
         resolve_item(&mut r, item);
     }
-    (r.resolutions, r.definitions, r.diagnostics)
+    (
+        r.resolutions,
+        r.definitions,
+        r.binding_def_ids,
+        r.diagnostics,
+    )
 }
 
 fn hoist_top_level(r: &mut Resolver, prog: &Program) {
     for item in &prog.items {
         match item {
             Item::Function(f) => {
-                r.define_or_report(f.name.clone(), DefKind::Function, f.span);
+                r.define_or_report(f.name.clone(), DefKind::Function, f.span, Some(f.id));
             }
             Item::Struct(s) => {
-                r.define_or_report(s.name.clone(), DefKind::Struct, s.span);
+                r.define_or_report(s.name.clone(), DefKind::Struct, s.span, Some(s.id));
             }
             Item::Enum(e) => {
                 // Capture the DefId so we can attach the enum's `type_params`
@@ -167,13 +202,19 @@ fn hoist_top_level(r: &mut Resolver, prog: &Program) {
                 // validate user-defined generic instantiations such as
                 // `Result<Int, String>`; Task 3 will use the same field to
                 // build variant signature schemas with `Ty::Param(i)`.
-                if let Some(enum_def_id) = r.define_or_report(e.name.clone(), DefKind::Enum, e.span)
+                if let Some(enum_def_id) =
+                    r.define_or_report(e.name.clone(), DefKind::Enum, e.span, Some(e.id))
                     && let Some(info) = r.definitions.get_mut(&enum_def_id)
                 {
                     info.type_params = e.type_params.clone();
                 }
                 for variant in &e.variants {
-                    r.define_or_report(variant.name.clone(), DefKind::EnumVariant, variant.span);
+                    r.define_or_report(
+                        variant.name.clone(),
+                        DefKind::EnumVariant,
+                        variant.span,
+                        Some(variant.id),
+                    );
                 }
             }
             // `Item::Let` is intentionally NOT hoisted: top-level `let` has
@@ -198,7 +239,14 @@ fn resolve_item(r: &mut Resolver, item: &Item) {
             // local let semantics.
             resolve_type_annotation(r, &l.ty);
             resolve_expr(r, &l.init);
-            r.define_or_report(l.name.clone(), DefKind::TopLevelLet, l.init.span);
+            // `LetStmt` has no NodeId of its own; the init expression's id is
+            // unique per top-level let and serves as the binding-intro key.
+            r.define_or_report(
+                l.name.clone(),
+                DefKind::TopLevelLet,
+                l.init.span,
+                Some(l.init.id),
+            );
         }
         Item::Struct(s) => {
             for field in &s.fields {
@@ -229,7 +277,7 @@ fn resolve_item(r: &mut Resolver, item: &Item) {
 fn resolve_function(r: &mut Resolver, f: &FunctionDef) {
     r.table.enter_scope();
     for p in &f.params {
-        r.define_or_report(p.name.clone(), DefKind::Param, p.span);
+        r.define_or_report(p.name.clone(), DefKind::Param, p.span, Some(p.id));
         resolve_type_annotation(r, &p.ty);
     }
     resolve_type_annotation(r, &f.return_ty);
@@ -259,10 +307,11 @@ fn resolve_stmt(r: &mut Resolver, s: &Stmt) {
     match &s.kind {
         StmtKind::Let(l) => {
             // Walk the type annotation, then the RHS in the *current* scope
-            // (let is non-recursive), then introduce the name.
+            // (let is non-recursive), then introduce the name. The wrapping
+            // `Stmt`'s NodeId serves as the binding-intro key.
             resolve_type_annotation(r, &l.ty);
             resolve_expr(r, &l.init);
-            r.define_or_report(l.name.clone(), DefKind::LocalLet, s.span);
+            r.define_or_report(l.name.clone(), DefKind::LocalLet, s.span, Some(s.id));
         }
         StmtKind::Assign(name, expr) => {
             resolve_name_use(r, name, s.span, s.id);
@@ -277,9 +326,14 @@ fn resolve_stmt(r: &mut Resolver, s: &Stmt) {
 }
 
 fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
-    // ForStmt variants do not carry per-binding spans; fall back to the
-    // outer Stmt span for loop-var binding sites. Pinning a precise span is
-    // a quality improvement that can be revisited later.
+    // ForStmt variants do not carry per-binding spans or NodeIds; fall back
+    // to the outer Stmt span for loop-var binding sites and pass `None` for
+    // the binding-intro key so `binding_def_ids` skips loop vars. Pinning a
+    // precise span/id is a quality improvement that can be revisited later;
+    // until then `check.rs::loop_var_def_id` keeps using the legacy
+    // `(kind, name, span)` linear scan for loop-var DefId recovery.
+    // TODO: when ForStmt grows per-binding NodeIds, plumb them through and
+    // collapse `loop_var_def_id` to a `binding_def_ids` lookup.
     match f {
         ForStmt::Range {
             var,
@@ -290,14 +344,14 @@ fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
             resolve_expr(r, start);
             resolve_expr(r, end);
             r.table.enter_scope();
-            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span);
+            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span, None);
             resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
         ForStmt::Iter { var, iter, body } => {
             resolve_expr(r, iter);
             r.table.enter_scope();
-            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span);
+            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span, None);
             resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
@@ -309,8 +363,8 @@ fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
         } => {
             resolve_expr(r, iter);
             r.table.enter_scope();
-            r.define_or_report(key.clone(), DefKind::LoopVar, outer_span);
-            r.define_or_report(value.clone(), DefKind::LoopVar, outer_span);
+            r.define_or_report(key.clone(), DefKind::LoopVar, outer_span, None);
+            r.define_or_report(value.clone(), DefKind::LoopVar, outer_span, None);
             resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
@@ -394,7 +448,7 @@ fn resolve_lambda(r: &mut Resolver, l: &LambdaExpr) {
     for p in &l.params {
         // LambdaExpr has no span; use each param's own span as its binding
         // site.
-        r.define_or_report(p.name.clone(), DefKind::Param, p.span);
+        r.define_or_report(p.name.clone(), DefKind::Param, p.span, Some(p.id));
     }
     match &l.body {
         LambdaBody::Expr(e) => resolve_expr(r, e),
@@ -429,7 +483,7 @@ fn bind_pattern(r: &mut Resolver, p: &Pattern) {
         | PatternKind::BoolLit(_)
         | PatternKind::StrLit(_) => {}
         PatternKind::Ident(name) => {
-            r.define_or_report(name.clone(), DefKind::PatternBinding, p.span);
+            r.define_or_report(name.clone(), DefKind::PatternBinding, p.span, Some(p.id));
         }
         PatternKind::Variant(ctor_name, sub_patterns) => {
             // Variant constructor must resolve to a DefId (the variant
@@ -588,7 +642,7 @@ mod tests {
     #[test]
     fn resolve_empty_program_yields_no_diagnostics() {
         let prog = parse_src("");
-        let (resolutions, _defs, diags) = resolve_program(&prog);
+        let (resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty());
         assert!(resolutions.is_empty());
     }
@@ -597,7 +651,7 @@ mod tests {
     fn resolve_top_level_let_then_use_in_function_body() {
         let src = "let k: Scalar = 0.5\nfunction f(): Scalar\n  return k\nend";
         let prog = parse_src(src);
-        let (resolutions, _defs, diags) = resolve_program(&prog);
+        let (resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
         // The `k` reference inside f's body resolves to the top-level let.
         // Verify at least one resolution exists for the Ident.
@@ -608,7 +662,7 @@ mod tests {
     fn resolve_undefined_name_produces_sema_diagnostic() {
         let src = "function f(): Scalar\n  return undefined_var\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].phase, crate::diag::Phase::Sema);
         assert_eq!(diags[0].level, crate::diag::Level::Error);
@@ -619,7 +673,7 @@ mod tests {
     fn resolve_duplicate_top_level_let_produces_diagnostic() {
         let src = "let x: Int = 1\nlet x: Int = 2";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("`x`"));
         assert!(diags[0].message.contains("already defined"));
@@ -639,7 +693,7 @@ mod tests {
         // visit unbound DefIds).
         let src = "let x: Int = 1\nlet x: Int = 2";
         let prog = parse_src(src);
-        let (_resolutions, defs, _diags) = resolve_program(&prog);
+        let (_resolutions, defs, _bindings, _diags) = resolve_program(&prog);
         assert_eq!(
             defs.len(),
             1,
@@ -655,7 +709,7 @@ mod tests {
         // uninitialized storage at runtime.
         let src = "let x: Int = x + 1";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags
                 .iter()
@@ -672,7 +726,7 @@ mod tests {
         // when `let a` is resolved.
         let src = "let a: Int = b\nlet b: Int = 1";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags
                 .iter()
@@ -687,7 +741,7 @@ mod tests {
         // f calls g; g is defined later. With hoisting, this resolves cleanly.
         let src = "function f(): Int\n  return g()\nend\nfunction g(): Int\n  return 0\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty());
     }
 
@@ -695,7 +749,7 @@ mod tests {
     fn resolve_function_param_in_body() {
         let src = "function f(x: Scalar): Scalar\n  return x\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty());
     }
 
@@ -703,7 +757,7 @@ mod tests {
     fn resolve_block_local_let_visible_inside_block_only() {
         let src = "function f(): Int\n  let y: Int = 1\n  return y\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -711,7 +765,7 @@ mod tests {
     fn resolve_for_range_loop_var_visible_in_body() {
         let src = "function sum(n: Int): Int\n  let total: Int = 0\n  for i = 0, n do\n    total = total + i\n  end\n  return total\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -720,7 +774,7 @@ mod tests {
         let src =
             "function f(): Int\n  for i = 0, 10 do\n    let i: Int = 5\n  end\n  return 0\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert_eq!(
             diags.len(),
             1,
@@ -735,7 +789,7 @@ mod tests {
     fn resolve_enum_variant_used_in_match_arm() {
         let src = "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(m: Maybe): Int\n  return match m\n    case Just(x) then x\n    case Nothing then 0\n  end\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -743,7 +797,7 @@ mod tests {
     fn resolve_typo_in_match_pattern_constructor_produces_diagnostic() {
         let src = "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(m: Maybe): Int\n  return match m\n    case Jsut(x) then x\n    case Nothing then 0\n  end\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.iter().any(|d| d.message.contains("Jsut")));
     }
 
@@ -756,7 +810,7 @@ mod tests {
         // Parser produces ForStmt::Iter for `for x in iter do ... end`.
         let src = "function f(xs: Array<Int>): Int\n  let total: Int = 0\n  for x in xs do\n    total = total + x\n  end\n  return total\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -765,7 +819,7 @@ mod tests {
         // Parser produces ForStmt::IterKV for `for k, v in pairs do ... end`.
         let src = "function f(pairs: Dict<Int, Int>): Int\n  let total: Int = 0\n  for k, v in pairs do\n    total = total + k + v\n  end\n  return total\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -775,7 +829,7 @@ mod tests {
         // statement resolves both LHS and RHS in the surrounding scope.
         let src = "function f(n: Int): Int\n  let i: Int = 0\n  while i < n do\n    i = i + 1\n  end\n  return i\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -785,7 +839,7 @@ mod tests {
         // must produce a sema diagnostic.
         let src = "function f(): Int\n  undefined = 1\n  return 0\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags.iter().any(|d| d.message.contains("undefined")),
             "diags: {:?}",
@@ -800,7 +854,7 @@ mod tests {
         let src =
             "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Point { x: 1.0, y: 2.0 }";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -811,7 +865,7 @@ mod tests {
         let src =
             "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Pint { x: 1.0, y: 2.0 }";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags.iter().any(|d| d.message.contains("Pint")),
             "diags: {:?}",
@@ -825,7 +879,7 @@ mod tests {
         // in arm 1 must NOT be visible in arm 2.
         let src = "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(m: Maybe): Int\n  return match m\n    case Just(x) then 0\n    case Nothing then x\n  end\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags
                 .iter()
@@ -842,7 +896,7 @@ mod tests {
         // top-level lets are still rejected — covered separately).
         let src = "let a: Int = 1\nlet b: Int = a + 1";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -852,7 +906,7 @@ mod tests {
         // the second produces a duplicate-name diagnostic.
         let src = "function f(): Int\n  return 0\nend\nfunction f(): Int\n  return 1\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("`f`"));
     }
@@ -863,7 +917,7 @@ mod tests {
         // namespace at top level" invariant.
         let src = "function foo(): Int\n  return 0\nend\nlet foo: Int = 1";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags.iter().any(|d| d.message.contains("`foo`")),
             "diags: {:?}",
@@ -879,7 +933,7 @@ mod tests {
         // function. So the diag fires on the let.
         let src = "let foo: Int = 1\nfunction foo(): Int\n  return 0\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(
             diags.iter().any(|d| d.message.contains("`foo`")),
             "diags: {:?}",
@@ -893,7 +947,7 @@ mod tests {
         // scope (the function body scope) and must collide.
         let src = "function f(): Int\n  let x: Int = 1\n  let x: Int = 2\n  return x\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("`x`"));
     }
@@ -904,7 +958,7 @@ mod tests {
         // a let with the same name as a param must collide.
         let src = "function f(x: Int): Int\n  let x: Int = 1\n  return x\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("`x`"));
     }
@@ -915,7 +969,7 @@ mod tests {
     fn resolve_struct_field_type_resolves_user_struct() {
         let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nstruct Line\n  start: Point\n  end_pt: Point\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -923,7 +977,7 @@ mod tests {
     fn resolve_undefined_struct_in_type_annotation_diag() {
         let src = "let p: Point = 0";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         // Pin no-cascade: a single undefined type name in a single
         // annotation must produce exactly one diagnostic.
         assert_eq!(diags.len(), 1, "diags: {:?}", diags);
@@ -940,7 +994,7 @@ mod tests {
         // even though no DefId exists for them.
         let src = "function f(x: Int, y: Scalar): Bool\n  return true\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -948,7 +1002,7 @@ mod tests {
     fn resolve_function_param_type_annotation_resolves() {
         let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nfunction f(p: Point): Point\n  return p\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 
@@ -956,7 +1010,7 @@ mod tests {
     fn resolve_enum_variant_payload_type_resolves() {
         let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nenum Shape\n  Circle(Point)\n  Empty\nend";
         let prog = parse_src(src);
-        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        let (_resolutions, _defs, _bindings, diags) = resolve_program(&prog);
         assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 }

@@ -25,7 +25,7 @@ use crate::ast::{
 };
 use crate::diag::Diagnostic;
 use crate::ids::{DefId, NodeId};
-use crate::sema::resolve::{DefKind, DefinitionTable, ResolveTable};
+use crate::sema::resolve::{BindingTable, DefKind, DefinitionTable, ResolveTable};
 use crate::sema::ty::{Dimension, Ty, VariantPayload, lower_type};
 use crate::sema::unify;
 use crate::source::Span;
@@ -33,6 +33,7 @@ use crate::source::Span;
 pub(crate) struct TypeChecker<'a> {
     resolutions: &'a ResolveTable,
     definitions: &'a DefinitionTable,
+    binding_def_ids: &'a BindingTable,
     pub(crate) def_types: &'a mut HashMap<DefId, Ty>,
     pub(crate) struct_fields: &'a HashMap<DefId, Vec<(String, Ty)>>,
     pub(crate) variant_payloads: &'a HashMap<DefId, VariantPayload>,
@@ -52,6 +53,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn new(
         resolutions: &'a ResolveTable,
         definitions: &'a DefinitionTable,
+        binding_def_ids: &'a BindingTable,
         def_types: &'a mut HashMap<DefId, Ty>,
         struct_fields: &'a HashMap<DefId, Vec<(String, Ty)>>,
         variant_payloads: &'a HashMap<DefId, VariantPayload>,
@@ -59,6 +61,7 @@ impl<'a> TypeChecker<'a> {
         Self {
             resolutions,
             definitions,
+            binding_def_ids,
             def_types,
             struct_fields,
             variant_payloads,
@@ -445,20 +448,13 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_function(&mut self, f: &FunctionDef) {
-        // Pin the lookup to (kind, name, span). For a *duplicate* top-level
-        // function, the resolver only registered the FIRST definition under
-        // this name, so the second's span won't match any entry in
-        // `definitions`. Skip the body walk entirely in that case so we
-        // don't cascade a spurious "expected T, found U" on top of the
-        // resolver's `duplicate_name` diag.
-        let def_id = self
-            .definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::Function) && info.name == f.name && info.span == f.span
-            })
-            .map(|(id, _)| *id);
-        let Some(def_id) = def_id else {
+        // Look up the function's DefId via its AST NodeId. For a *duplicate*
+        // top-level function, the resolver's `define_or_report` returns
+        // `None` and never inserts into `binding_def_ids`, so this lookup
+        // also returns `None` for the duplicate's `f.id` — skipping the
+        // body walk so we don't cascade a spurious "expected T, found U"
+        // on top of the resolver's `duplicate_name` diag.
+        let Some(def_id) = self.binding_def_ids.get(&f.id).copied() else {
             return;
         };
         let expected_return = self.def_types.get(&def_id).and_then(|sig| match sig {
@@ -490,11 +486,12 @@ impl<'a> TypeChecker<'a> {
     fn synth_stmt(&mut self, s: &Stmt) -> Ty {
         match &s.kind {
             StmtKind::Let(l) => {
-                // Recover the local let's DefId via (DefKind::LocalLet, name,
-                // span). Pass 1 (signature_pass) only handled top-level lets,
-                // so the entry may not yet be in def_types; insert it now
-                // using the lowered annotation.
-                if let Some(def_id) = self.local_let_def_id(&l.name, s.span) {
+                // Recover the local let's DefId via the wrapping `Stmt`'s
+                // NodeId (which `define_or_report` keyed the binding entry
+                // under). Pass 1 (signature_pass) only handled top-level
+                // lets, so the entry may not yet be in def_types; insert it
+                // now using the lowered annotation.
+                if let Some(def_id) = self.binding_def_ids.get(&s.id).copied() {
                     if !self.def_types.contains_key(&def_id) {
                         let lowered = lower_type(
                             &l.ty,
@@ -541,31 +538,17 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn local_let_def_id(&self, name: &str, span: Span) -> Option<DefId> {
-        self.definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::LocalLet) && info.name == name && info.span == span
-            })
-            .map(|(id, _)| *id)
-    }
-
+    /// Recover a loop-variable's DefId by `(DefKind::LoopVar, name, span)`.
+    /// Loop vars are the lone holdout from `binding_def_ids`: `ForStmt`'s
+    /// AST has no per-binding NodeId, so the resolver passes `None` to
+    /// `define_or_report` and this linear scan stands in. TODO: when
+    /// `ForStmt` grows per-binding NodeIds, replace with a
+    /// `binding_def_ids.get(&node_id).copied()` lookup.
     fn loop_var_def_id(&self, name: &str, span: Span) -> Option<DefId> {
         self.definitions
             .iter()
             .find(|(_, info)| {
                 matches!(info.kind, DefKind::LoopVar) && info.name == name && info.span == span
-            })
-            .map(|(id, _)| *id)
-    }
-
-    fn pattern_binding_def_id(&self, name: &str, span: Span) -> Option<DefId> {
-        self.definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::PatternBinding)
-                    && info.name == name
-                    && info.span == span
             })
             .map(|(id, _)| *id)
     }
@@ -640,14 +623,12 @@ impl<'a> TypeChecker<'a> {
             PatternKind::IntLit(_) => self.unify_or_diag(&Ty::Int, expected, p.span),
             PatternKind::BoolLit(_) => self.unify_or_diag(&Ty::Bool, expected, p.span),
             PatternKind::StrLit(_) => self.unify_or_diag(&Ty::String, expected, p.span),
-            PatternKind::Ident(name) => {
-                // The resolver creates a DefKind::PatternBinding for this
-                // name (under the pattern's own span). Look it up by
-                // (kind, name, span) and record its type as the scrutinee's.
-                // Resolutions[p.id] is *not* populated for pattern bindings —
-                // that table maps name *uses*, while pattern bindings are
-                // introductions.
-                if let Some(def_id) = self.pattern_binding_def_id(name, p.span) {
+            PatternKind::Ident(_name) => {
+                // Pattern bindings are introductions (not uses), so they're
+                // recorded in `binding_def_ids` keyed by the pattern's own
+                // NodeId rather than in `resolutions`. Recover the DefId in
+                // O(1) and record its type as the scrutinee's.
+                if let Some(def_id) = self.binding_def_ids.get(&p.id).copied() {
                     self.def_types.insert(def_id, expected.clone());
                 }
             }
@@ -843,6 +824,7 @@ pub(crate) fn run(
     program: &Program,
     resolutions: &ResolveTable,
     definitions: &DefinitionTable,
+    binding_def_ids: &BindingTable,
     def_types: &mut HashMap<DefId, Ty>,
     struct_fields: &HashMap<DefId, Vec<(String, Ty)>>,
     variant_payloads: &HashMap<DefId, VariantPayload>,
@@ -850,6 +832,7 @@ pub(crate) fn run(
     let mut tc = TypeChecker::new(
         resolutions,
         definitions,
+        binding_def_ids,
         def_types,
         struct_fields,
         variant_payloads,
