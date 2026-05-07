@@ -152,8 +152,28 @@ fn signature_pass(
                     .map(|p| lower_type(&p.ty, resolutions, definitions, diags))
                     .collect();
                 let ret_ty = lower_type(&f.return_ty, resolutions, definitions, diags);
-                let sig = Ty::Function(param_tys, Box::new(ret_ty));
-                def_types.insert(def_id, sig);
+                // Param DefIds aren't in `name_to_def` (function-scoped, not
+                // hoisted). Recover each via `DefinitionTable` matching
+                // `(DefKind::Param, name, span)` and reuse the already-lowered
+                // Ty so `lower_type` runs once per param. O(params ×
+                // definitions); acceptable for dyne-scale code. A future PR
+                // can add a `param_def_ids: HashMap<NodeId, DefId>` index to
+                // Resolver output if profiling shows it hot.
+                for (p, ty) in f.params.iter().zip(param_tys.iter()) {
+                    let Some(p_def_id) = definitions
+                        .iter()
+                        .find(|(_, info)| {
+                            matches!(info.kind, DefKind::Param)
+                                && info.name == p.name
+                                && info.span == p.span
+                        })
+                        .map(|(id, _)| *id)
+                    else {
+                        continue;
+                    };
+                    def_types.insert(p_def_id, ty.clone());
+                }
+                def_types.insert(def_id, Ty::Function(param_tys, Box::new(ret_ty)));
             }
             Item::Struct(s) => {
                 let Some(def_id) = name_to_def.get(s.name.as_str()).copied() else {
@@ -202,31 +222,6 @@ fn signature_pass(
                 def_types.insert(def_id, ty);
             }
             Item::Import(_) => {}
-        }
-    }
-
-    // Param DefIds aren't in `name_to_def` (they're function-scoped, not
-    // hoisted). Recover them via `DefinitionTable` iteration matching
-    // `(DefKind::Param, name, span)`. O(params × definitions) per function;
-    // acceptable for dyne-scale code. If profiling shows hot, future work
-    // can add a `param_def_ids: HashMap<NodeId, DefId>` to Resolver output.
-    for item in &program.items {
-        if let Item::Function(f) = item {
-            for p in &f.params {
-                let Some(p_def_id) = definitions
-                    .iter()
-                    .find(|(_, info)| {
-                        matches!(info.kind, DefKind::Param)
-                            && info.name == p.name
-                            && info.span == p.span
-                    })
-                    .map(|(id, _)| *id)
-                else {
-                    continue;
-                };
-                let ty = lower_type(&p.ty, resolutions, definitions, diags);
-                def_types.insert(p_def_id, ty);
-            }
         }
     }
 
@@ -392,5 +387,35 @@ mod tests {
             *typed.def_types.get(&let_def_id).unwrap(),
             Ty::Scalar(Dimension::ZERO)
         );
+    }
+
+    // ----- Negative regression tests: signature_pass must not duplicate
+    // diagnostics for an invalid annotation that's already been reported by
+    // a single `lower_type` call. Pre-fix, `Item::Function` lowered each
+    // param twice (once in the main arm, once in a trailing recovery loop),
+    // emitting `Ty::Error` diagnostics in duplicate.
+
+    #[test]
+    fn invalid_param_type_emits_single_diagnostic() {
+        let prog = parse_src("function f(v: Vec): Int\n  return 0\nend");
+        let err = check(prog).expect_err("expected diags");
+        assert_eq!(err.len(), 1, "got: {:?}", err);
+        assert!(err[0].message.contains("`Vec`"));
+    }
+
+    #[test]
+    fn invalid_return_type_emits_single_diagnostic() {
+        let prog = parse_src("function f(): Vec\n  return 0\nend");
+        let err = check(prog).expect_err("expected diags");
+        assert_eq!(err.len(), 1, "got: {:?}", err);
+        assert!(err[0].message.contains("`Vec`"));
+    }
+
+    #[test]
+    fn invalid_struct_field_type_emits_single_diagnostic() {
+        let prog = parse_src("struct S\n  x: Vec\nend");
+        let err = check(prog).expect_err("expected diags");
+        assert_eq!(err.len(), 1, "got: {:?}", err);
+        assert!(err[0].message.contains("`Vec`"));
     }
 }
