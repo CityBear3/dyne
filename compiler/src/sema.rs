@@ -3,6 +3,7 @@
 //! PR-3a populates the resolution side of this module. PR-3b adds basic
 //! type checking; later PRs add generics, units, and stdlib signatures.
 
+pub mod check;
 pub mod diag;
 pub mod resolve;
 pub mod ty;
@@ -88,11 +89,21 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     // top-level lets, function params). Continues even when `diags` already
     // contains resolve errors — `lower_type`'s `Ty::Error` sentinel
     // suppresses cascading diagnostics from sub-trees that failed earlier.
-    let (def_types, struct_fields, variant_payloads) =
+    let (mut def_types, struct_fields, variant_payloads) =
         signature_pass(&program, &resolutions, &definitions, &mut diags);
 
-    // Pass 2 (Tasks 4–6) walks function bodies. For Task 3 it is a stub.
-    let types = TypeTable::new();
+    // Pass 2: bidirectional type checking of function bodies and top-level
+    // let init expressions. Task 4 lands literal/ident/operator rules; later
+    // tasks extend Pass 2 to calls / struct literals / control flow / match.
+    let (types, type_diags) = check::run(
+        &program,
+        &resolutions,
+        &definitions,
+        &mut def_types,
+        &struct_fields,
+        &variant_payloads,
+    );
+    diags.extend(type_diags);
 
     if !diags.is_empty() {
         return Err(diags);
@@ -244,7 +255,12 @@ mod tests {
         let prog = parse_src("let x: Int = 1");
         let typed = check(prog).expect("expected ok");
         assert_eq!(typed.program.items.len(), 1);
-        assert!(typed.types.is_empty(), "PR-3a leaves types table empty");
+        // PR-3b's Pass 2 records expression types. The init `1` is checked
+        // against `Int` and its `NodeId → Ty::Int` mapping lands in `types`.
+        assert!(
+            !typed.types.is_empty(),
+            "PR-3b records expression types in Pass 2"
+        );
         assert_eq!(
             typed.definitions.len(),
             1,
