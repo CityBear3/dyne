@@ -82,7 +82,11 @@ fn stage2_struct_definition_compiles() {
 
 #[test]
 fn stage2_enum_with_generic_compiles() {
-    let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend";
+    // Use names that don't shadow the built-in `Result<T, E>` and its
+    // variants `Ok`/`Err` (PR-3c Task 6 made them visible to all
+    // programs). The test exercises generic enum declaration syntax, not
+    // the specific names.
+    let src = "enum MyResult<T, E>\n  MyOk(T)\n  MyErr(E)\nend";
     let prog = dyne::compile(src).unwrap().program;
     assert_eq!(prog.items.len(), 1);
 }
@@ -200,5 +204,63 @@ fn compile_unknown_struct_field_yields_diagnostic() {
         diags[0].message.contains("`z`"),
         "msg: {}",
         diags[0].message
+    );
+}
+
+// ----- PR-3c Task 6: built-in Option<T> and Result<T, E> -----
+
+#[test]
+fn builtin_option_resolves_in_type_annotation() {
+    let result = dyne::compile("function f(): Option<Int>\n  return Some(1)\nend");
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_result_resolves_in_type_annotation() {
+    let result = dyne::compile("function f(): Result<Int, String>\n  return Ok(42)\nend");
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_some_none_visible() {
+    let result = dyne::compile(
+        "function f(): Option<Int>\n  return None\nend\nfunction g(): Option<Int>\n  return Some(1)\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_ok_err_visible() {
+    let result = dyne::compile(
+        "function f(): Result<Int, String>\n  return Ok(1)\nend\nfunction g(): Result<Int, String>\n  return Err(\"x\")\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_match_option_compiles() {
+    let result = dyne::compile(
+        "function f(o: Option<Int>): Int\n  return match o\n    case Some(x) then x\n    case None then 0\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
     );
 }

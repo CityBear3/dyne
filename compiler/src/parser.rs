@@ -10,9 +10,25 @@ use crate::ids::NodeId;
 use crate::lexer::{Token, TokenKind};
 use crate::source::Span;
 
+/// Parse without a NodeId offset. Reserved for in-crate unit tests that
+/// don't need to merge with built-ins; production callers go through
+/// `parse_with_node_offset` via `lib::compile`.
+#[cfg(test)]
 pub(crate) fn parse(tokens: Vec<Token>) -> Result<Program, Diagnostic> {
-    let mut parser = Parser::new(&tokens);
-    stmt::parse_program(&mut parser)
+    parse_with_node_offset(tokens, 0).map(|(p, _)| p)
+}
+
+/// Parse with a starting `NodeId` offset and return the parsed `Program`
+/// alongside the next `NodeId` that would have been allocated. Used by
+/// `compile()` to keep built-in and user-source NodeIds disjoint so the
+/// merged `Program` has unique ids per node.
+pub(crate) fn parse_with_node_offset(
+    tokens: Vec<Token>,
+    node_offset: u32,
+) -> Result<(Program, u32), Diagnostic> {
+    let mut parser = Parser::new_with_offset(&tokens, node_offset);
+    let program = stmt::parse_program(&mut parser)?;
+    Ok((program, parser.next_node_id))
 }
 
 pub(crate) struct Parser<'t> {
@@ -22,11 +38,16 @@ pub(crate) struct Parser<'t> {
 }
 
 impl<'t> Parser<'t> {
+    #[cfg(test)]
     pub(crate) fn new(tokens: &'t [Token]) -> Self {
+        Self::new_with_offset(tokens, 0)
+    }
+
+    fn new_with_offset(tokens: &'t [Token], offset: u32) -> Self {
         Self {
             tokens,
             pos: 0,
-            next_node_id: 0,
+            next_node_id: offset,
         }
     }
 

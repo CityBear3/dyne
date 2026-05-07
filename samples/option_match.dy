@@ -2,9 +2,10 @@
 // Demonstrates struct definition, enum definition (no generics), struct
 // literal, match expression with `case` arms, and a no-payload variant.
 //
-// PR-3b uses a non-generic `MaybeMeasurement` enum because user-defined
-// generic enums (`enum Option<T>`) and their constructors / instantiation
-// land with PR-3c. A future revision restores `Option<T>`.
+// PR-3c Task 6 introduced built-in `Option<T>` / `Some` / `None`, so this
+// sample renames its Maybe variants to `Just` / `Nothing` to avoid the
+// shadow. PR-3c Task 8 rewrites the file to use the built-in `Option<T>`
+// directly.
 
 struct Measurement
   value: Scalar
@@ -12,16 +13,16 @@ struct Measurement
 end
 
 enum MaybeMeasurement
-  Some(Measurement)
-  None
+  Just(Measurement)
+  Nothing
 end
 
 function value_or_default(m: MaybeMeasurement, default: Scalar): Scalar
   return match m
-    case Some(measured) then measured.value
-    case None then default
+    case Just(measured) then measured.value
+    case Nothing then default
   end
 end
 
-let known: MaybeMeasurement = Some(Measurement { value: 9.81, uncertainty: 0.01 })
-let unknown: MaybeMeasurement = None
+let known: MaybeMeasurement = Just(Measurement { value: 9.81, uncertainty: 0.01 })
+let unknown: MaybeMeasurement = Nothing

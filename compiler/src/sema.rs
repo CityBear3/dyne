@@ -9,6 +9,8 @@ pub mod resolve;
 pub mod ty;
 pub mod unify;
 
+pub(crate) mod builtins;
+
 use std::collections::HashMap;
 
 use crate::ast::{Item, Program};
