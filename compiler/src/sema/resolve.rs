@@ -414,7 +414,10 @@ fn resolve_name_use(r: &mut Resolver, name: &str, span: Span, id: NodeId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Program;
     use crate::ids::DefId;
+    use crate::lexer::tokenize;
+    use crate::parser::parse;
     use crate::source::Span;
 
     fn span_at(start: u32, end: u32) -> Span {
@@ -479,10 +482,6 @@ mod tests {
         assert_eq!(table.lookup("outer"), Some(DefId(1)));
         assert_eq!(table.lookup("inner"), Some(DefId(2)));
     }
-
-    use crate::ast::Program;
-    use crate::lexer::tokenize;
-    use crate::parser::parse;
 
     fn parse_src(src: &str) -> Program {
         parse(tokenize(src).unwrap()).unwrap()
