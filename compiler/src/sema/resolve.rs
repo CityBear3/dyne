@@ -172,15 +172,35 @@ fn resolve_item(r: &mut Resolver, item: &Item) {
     match item {
         Item::Function(f) => resolve_function(r, f),
         Item::Let(l) => {
-            // Top-level let: walk RHS in the current (root) scope first,
-            // THEN introduce the binding. Mirrors local let semantics.
+            // Top-level let: walk the type annotation, then walk the RHS in
+            // the current (root) scope, THEN introduce the binding. Mirrors
+            // local let semantics.
+            resolve_type_annotation(r, &l.ty);
             resolve_expr(r, &l.init);
             r.define_or_report(l.name.clone(), DefKind::TopLevelLet, l.init.span);
         }
-        Item::Struct(_) | Item::Enum(_) | Item::Import(_) => {
-            // PR-3a does not resolve type annotations or variant payloads.
-            // Type-name resolution lands in PR-3b alongside Type → Ty
-            // conversion.
+        Item::Struct(s) => {
+            for field in &s.fields {
+                resolve_type_annotation(r, &field.ty);
+            }
+        }
+        Item::Enum(e) => {
+            // Generic enum payloads reference the enum's type parameters
+            // (e.g. `Ok(T)` inside `enum Result<T, E>`). Type-parameter
+            // scoping lands with PR-3c's generic instantiation; until then,
+            // skip the payload walk for generic enums to avoid spurious
+            // undefined-name diagnostics for T/E. Non-generic enums still
+            // get their concrete payload types resolved.
+            if e.type_params.is_empty() {
+                for variant in &e.variants {
+                    for payload_ty in &variant.payload {
+                        resolve_type_annotation(r, payload_ty);
+                    }
+                }
+            }
+        }
+        Item::Import(_) => {
+            // PR-3a: imports are no-ops.
         }
     }
 }
@@ -189,7 +209,9 @@ fn resolve_function(r: &mut Resolver, f: &FunctionDef) {
     r.table.enter_scope();
     for p in &f.params {
         r.define_or_report(p.name.clone(), DefKind::Param, p.span);
+        resolve_type_annotation(r, &p.ty);
     }
+    resolve_type_annotation(r, &f.return_ty);
     resolve_stmts(r, &f.body.stmts);
     r.table.exit_scope();
 }
@@ -215,8 +237,9 @@ fn resolve_stmts(r: &mut Resolver, stmts: &[Stmt]) {
 fn resolve_stmt(r: &mut Resolver, s: &Stmt) {
     match &s.kind {
         StmtKind::Let(l) => {
-            // Walk the RHS in the *current* scope (let is non-recursive),
-            // then introduce the name.
+            // Walk the type annotation, then the RHS in the *current* scope
+            // (let is non-recursive), then introduce the name.
+            resolve_type_annotation(r, &l.ty);
             resolve_expr(r, &l.init);
             r.define_or_report(l.name.clone(), DefKind::LocalLet, s.span);
         }
@@ -397,6 +420,60 @@ fn bind_pattern(r: &mut Resolver, p: &Pattern) {
             }
         }
     }
+}
+
+/// Walk a type annotation, recording resolutions for user-defined type names.
+/// Built-in type names (`Int`/`Bool`/`String`/`Scalar`/`Vec`/`Mat`/`Array`/`Dict`)
+/// have no DefId and are skipped here; `lower_type` dispatches them by string.
+fn resolve_type_annotation(r: &mut Resolver, ty: &crate::ast::Type) {
+    use crate::ast::{TypeArg, TypeKind};
+    match &ty.kind {
+        TypeKind::Named(name) => {
+            if !is_builtin_type_name(name) {
+                resolve_name_use(r, name, ty.span, ty.id);
+            }
+        }
+        TypeKind::Generic(name, args) => {
+            if !is_builtin_type_name(name) {
+                resolve_name_use(r, name, ty.span, ty.id);
+            }
+            // For Scalar/Vec/Mat the trailing/all args are unit or size
+            // positions, never real type positions. The parser ambiguously
+            // emits TypeArg::Type(Named("kg")) for single-atom units (it
+            // can't disambiguate "kg" from a type name without context), so
+            // skip recursion into those positions. lower_type silently
+            // strips them per Option β.
+            let unit_or_size_only = matches!(name.as_str(), "Scalar" | "Vec" | "Mat");
+            if !unit_or_size_only {
+                for arg in args {
+                    match arg {
+                        TypeArg::Type(t) => resolve_type_annotation(r, t),
+                        TypeArg::Int(_) => {}
+                        TypeArg::Unit(u) => resolve_unit_expr(r, u),
+                    }
+                }
+            }
+        }
+        TypeKind::Function(args, ret) => {
+            for a in args {
+                resolve_type_annotation(r, a);
+            }
+            resolve_type_annotation(r, ret);
+        }
+    }
+}
+
+fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Int" | "Bool" | "String" | "Scalar" | "Vec" | "Mat" | "Array" | "Dict"
+    )
+}
+
+fn resolve_unit_expr(_r: &mut Resolver, _u: &crate::ast::UnitExpr) {
+    // PR-3d resolves unit names. PR-3b's resolver does not visit unit atoms;
+    // lower_type's silent-strip behavior (Option β) means unit args are
+    // semantically inert in 3b.
 }
 
 fn resolve_name_use(r: &mut Resolver, name: &str, span: Span, id: NodeId) {
@@ -809,5 +886,56 @@ mod tests {
         let (_resolutions, _defs, diags) = resolve_program(&prog);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("`x`"));
+    }
+
+    // ----- PR-3b Task 2: type-annotation walk -----
+
+    #[test]
+    fn resolve_struct_field_type_resolves_user_struct() {
+        let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nstruct Line\n  start: Point\n  end_pt: Point\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_undefined_struct_in_type_annotation_diag() {
+        let src = "let p: Point = 0";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        // Pin no-cascade: a single undefined type name in a single
+        // annotation must produce exactly one diagnostic.
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Point"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn resolve_builtin_type_names_are_skipped() {
+        // None of these built-ins should produce undefined-name diagnostics
+        // even though no DefId exists for them.
+        let src = "function f(x: Int, y: Scalar): Bool\n  return true\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_function_param_type_annotation_resolves() {
+        let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nfunction f(p: Point): Point\n  return p\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_enum_variant_payload_type_resolves() {
+        let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nenum Shape\n  Circle(Point)\n  Empty\nend";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
     }
 }

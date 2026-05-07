@@ -1,23 +1,27 @@
-// Pattern-match an Option value to extract a Scalar with a default.
-// Demonstrates struct definition, enum definition (generic), struct literal,
-// match expression with `case` arms, and a no-payload variant pattern.
+// Pattern-match a Maybe-style enum to extract a Scalar with a default.
+// Demonstrates struct definition, enum definition (no generics), struct
+// literal, match expression with `case` arms, and a no-payload variant.
+//
+// PR-3b uses a non-generic `MaybeMeasurement` enum because user-defined
+// generic enums (`enum Option<T>`) and their constructors / instantiation
+// land with PR-3c. A future revision restores `Option<T>`.
 
 struct Measurement
   value: Scalar
   uncertainty: Scalar
 end
 
-enum Option<T>
-  Some(T)
+enum MaybeMeasurement
+  Some(Measurement)
   None
 end
 
-function value_or_default(m: Option<Measurement>, default: Scalar): Scalar
+function value_or_default(m: MaybeMeasurement, default: Scalar): Scalar
   return match m
     case Some(measured) then measured.value
     case None then default
   end
 end
 
-let known: Option<Measurement> = Some(Measurement { value: 9.81, uncertainty: 0.01 })
-let unknown: Option<Measurement> = None
+let known: MaybeMeasurement = Some(Measurement { value: 9.81, uncertainty: 0.01 })
+let unknown: MaybeMeasurement = None
