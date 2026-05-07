@@ -181,9 +181,13 @@ impl<'a> TypeChecker<'a> {
                         param_tys.len(),
                         args.len(),
                     ));
-                    // Don't check args on arity mismatch — the user has a
-                    // structural error and per-arg cascade would be noise.
-                    return *ret_ty;
+                    // Return Ty::Error so the call's surrounding context
+                    // (e.g. `unify_or_diag` against the function's declared
+                    // return type) doesn't cascade into a second diag. Per
+                    // the no-cascade watchpoint: a structural error already
+                    // pinned by `wrong_arity` shouldn't also produce a
+                    // "expected T, found U" mismatch downstream.
+                    return Ty::Error;
                 }
                 for (arg, expected) in args.iter().zip(param_tys.iter()) {
                     self.check_expr(arg, expected);
@@ -637,6 +641,20 @@ mod tests {
     fn call_with_wrong_arity_diag() {
         let diags = diags_for(
             "function add(a: Int, b: Int): Int\n  return a + b\nend\nfunction g(): Int\n  return add(1)\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("expected 2, found 1"));
+    }
+
+    #[test]
+    fn arity_mismatch_does_not_cascade_to_return_check() {
+        // Regression for the cascade bug: previously synth_call's
+        // arity-mismatch arm returned `*ret_ty`, causing unify_or_diag to
+        // fire a second "type mismatch" diag whenever the call appeared in
+        // a context expecting a different return type. Now the arm returns
+        // Ty::Error, which the no-cascade rule absorbs.
+        let diags = diags_for(
+            "function add(a: Int, b: Int): Int\n  return a + b\nend\nfunction g(): String\n  return add(1)\nend",
         );
         assert_eq!(diags.len(), 1, "diags: {:?}", diags);
         assert!(diags[0].message.contains("expected 2, found 1"));
