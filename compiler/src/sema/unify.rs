@@ -49,6 +49,11 @@ impl Table {
         let b = self.resolve(b);
         match (a, b) {
             (Ty::Error, _) | (_, Ty::Error) => Ok(()),
+            // Identical-var early-out: without this, the next arm would
+            // bind `cells[v] = Some(Var(v))`, which makes `resolve()`
+            // infinite-loop. Latent in 3b (concrete-only) but PR-3c will
+            // hit this when the same scrutinee var unifies twice.
+            (Ty::Var(v), Ty::Var(w)) if v == w => Ok(()),
             (Ty::Var(v), other) | (other, Ty::Var(v)) => {
                 self.cells[v.0 as usize] = Some(other);
                 Ok(())
@@ -109,5 +114,17 @@ mod tests {
         let mut t = Table::new();
         t.unify(&Ty::Error, &Ty::Int).unwrap();
         t.unify(&Ty::Int, &Ty::Error).unwrap();
+    }
+
+    #[test]
+    fn unify_var_with_itself_is_no_op() {
+        // Regression for the self-loop bug: without the v == w early-out,
+        // unify(Var(α), Var(α)) would write cells[α] = Some(Var(α)) and
+        // resolve() would infinite-loop. After the fix, resolve still
+        // returns the unsolved var.
+        let mut t = Table::new();
+        let v = t.fresh();
+        t.unify(&Ty::Var(v), &Ty::Var(v)).unwrap();
+        assert_eq!(t.resolve(&Ty::Var(v)), Ty::Var(v));
     }
 }

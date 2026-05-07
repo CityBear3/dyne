@@ -521,16 +521,28 @@ impl<'a> TypeChecker<'a> {
     fn synth_if(&mut self, e: &Expr, if_expr: &IfExpr) -> Ty {
         self.check_cond(&if_expr.cond);
         let then_ty = self.synth_block(&if_expr.then_block);
+        let mut had_arm_mismatch = false;
         for (cond, block) in &if_expr.elseifs {
             self.check_cond(cond);
             let arm_ty = self.synth_block(block);
+            let prev = self.diagnostics.len();
             self.unify_or_diag(&arm_ty, &then_ty, e.span);
+            if self.diagnostics.len() != prev {
+                had_arm_mismatch = true;
+            }
         }
         if let Some(else_block) = &if_expr.else_block {
             let arm_ty = self.synth_block(else_block);
+            let prev = self.diagnostics.len();
             self.unify_or_diag(&arm_ty, &then_ty, e.span);
+            if self.diagnostics.len() != prev {
+                had_arm_mismatch = true;
+            }
         }
-        then_ty
+        // No-cascade: when any arm-vs-seed unification already fired a
+        // diag, return Ty::Error so the outer context's check_expr
+        // doesn't pile a second "type mismatch" on top.
+        if had_arm_mismatch { Ty::Error } else { then_ty }
     }
 
     /// Type-check a condition position. Emits the cond-specific
@@ -550,11 +562,19 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         };
         let seed_ty = self.check_match_arm(first, &scrut_ty);
+        let mut had_arm_mismatch = false;
         for arm in rest {
             let arm_ty = self.check_match_arm(arm, &scrut_ty);
+            let prev = self.diagnostics.len();
             self.unify_or_diag(&arm_ty, &seed_ty, arm.span);
+            if self.diagnostics.len() != prev {
+                had_arm_mismatch = true;
+            }
         }
-        seed_ty
+        // No-cascade: same shape as synth_if. If any arm-vs-seed
+        // mismatch already pushed a diag, return Ty::Error so the
+        // outer check_expr doesn't fire a second one.
+        if had_arm_mismatch { Ty::Error } else { seed_ty }
     }
 
     fn check_match_arm(&mut self, arm: &MatchArm, scrut_ty: &Ty) -> Ty {
@@ -685,9 +705,11 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         };
         let first_ty = self.synth_expr(first);
+        // Subsequent elements check against the first; using `check_expr`
+        // (rather than synth + unify_or_diag) lets the IntLit→Scalar(ZERO)
+        // gate widen int literals when the seed is a dimensionless Scalar.
         for el in rest {
-            let elem_ty = self.synth_expr(el);
-            self.unify_or_diag(&elem_ty, &first_ty, el.span);
+            self.check_expr(el, &first_ty);
         }
         let dim = match &first_ty {
             Ty::Scalar(d) => *d,
@@ -732,22 +754,30 @@ impl<'a> TypeChecker<'a> {
 
     fn synth_index(&mut self, base: &Expr, idx: &Expr) -> Ty {
         let base_ty = self.synth_expr(base);
-        let idx_ty = self.synth_expr(idx);
+        // Route the index through `check_expr` so the IntLit→Scalar(ZERO)
+        // implicit-conversion gate (DD line 143) fires when, e.g., a
+        // `Dict<Scalar, _>` is indexed with an int literal.
         match base_ty {
             Ty::Array(t) => {
-                self.unify_or_diag(&idx_ty, &Ty::Int, idx.span);
+                self.check_expr(idx, &Ty::Int);
                 *t
             }
             Ty::Vec(_, dim) => {
-                self.unify_or_diag(&idx_ty, &Ty::Int, idx.span);
+                self.check_expr(idx, &Ty::Int);
                 Ty::Scalar(dim)
             }
             Ty::Dict(k, v) => {
-                self.unify_or_diag(&idx_ty, &k, idx.span);
+                self.check_expr(idx, &k);
                 *v
             }
-            Ty::Error => Ty::Error,
+            Ty::Error => {
+                // Still record the index expression's type for downstream
+                // tooling / future analyses.
+                self.synth_expr(idx);
+                Ty::Error
+            }
             other => {
+                self.synth_expr(idx);
                 self.diagnostics.push(crate::sema::diag::op_type_error(
                     base.span, "indexing", &other,
                 ));
@@ -1152,5 +1182,48 @@ mod tests {
             "msg: {}",
             diags[0].message
         );
+    }
+
+    // ----- Regression tests for code-quality fixes (Task 6 follow-up) -----
+
+    #[test]
+    fn if_arm_mismatch_does_not_cascade_to_outer() {
+        // Then arm = Int, else arm = Bool: 1 unification diag from synth_if.
+        // Pre-fix, synth_if returned then_ty (Int), so check_expr against the
+        // function's `String` return then fired a *second* diag.
+        let diags = diags_for("function f(): String\n  return if 1 < 2 then 1 else true end\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Bool"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_arm_mismatch_does_not_cascade_to_outer() {
+        // First arm body = Bool; second arm body = Int. Function returns Int.
+        // Pre-fix, synth_match returned seed_ty (Bool), so check_expr against
+        // Int fired a second diag.
+        let diags = diags_for(
+            "function f(): Int\n  return match 1\n    case 1 then true\n    case _ then 2\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn dict_index_with_int_literal_widens_to_scalar_key() {
+        // `Dict<Scalar, Int>` indexed with `5` (IntLit) — the
+        // IntLit→Scalar(ZERO) coercion should fire because synth_index
+        // routes through check_expr.
+        compile_src("function f(d: Dict<Scalar, Int>): Int\n  return d[5]\nend");
+    }
+
+    #[test]
+    fn vec_lit_widens_int_lit_to_scalar() {
+        // `[1.0, 2, 3.0]` — first element is FloatLit (Scalar(ZERO));
+        // subsequent IntLit element should widen via check_expr's
+        // IntLit→Scalar(ZERO) gate, not error out.
+        compile_src("function f(): Vec<3>\n  return [1.0, 2, 3.0]\nend");
     }
 }
