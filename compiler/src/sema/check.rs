@@ -4,11 +4,15 @@
 //! let init expression, populating the `TypeTable` and emitting diagnostics
 //! for type errors.
 //!
-//! Task 4 lands the synth/check skeleton and the simplest type rules:
-//! literals, identifiers, primitive operators (arithmetic / comparison /
-//! logical / unary). Other expression kinds (Call, FieldAccess, VecLit,
-//! MatLit, IfExpr, Match, Lambda, StructLit, Index, Block-as-expr) record
-//! `Ty::Error` and are filled in by Tasks 5–6.
+//! - Task 4: synth/check skeleton + literal / identifier / arithmetic /
+//!   comparison / logical / unary rules + `Int → Scalar(ZERO)` implicit
+//!   conversion in checking mode.
+//! - Task 5: `Call` (arity + arg-type), `StructLit` (per-field check vs
+//!   declaration; missing/extra diagnostics), `FieldAccess` (struct →
+//!   field Ty lookup).
+//! - Task 6 (pending): `IfExpr` / `Match` / `While` / `For` / `VecLit` /
+//!   `MatLit` / `Index` / `Block`-as-expr / Vec-Mat operator shape rules.
+//!   These currently record `Ty::Error` without diagnostics.
 
 use std::collections::HashMap;
 
@@ -25,9 +29,8 @@ pub(crate) struct TypeChecker<'a> {
     resolutions: &'a ResolveTable,
     definitions: &'a DefinitionTable,
     pub(crate) def_types: &'a mut HashMap<DefId, Ty>,
-    #[allow(dead_code)] // Consumed in Task 5 (struct literals / field access).
     pub(crate) struct_fields: &'a HashMap<DefId, Vec<(String, Ty)>>,
-    #[allow(dead_code)] // Consumed in Task 5–6 (variant constructors / patterns).
+    #[allow(dead_code)] // Consumed in Task 6 (variant constructors / patterns).
     pub(crate) variant_payloads: &'a HashMap<DefId, VariantPayload>,
     pub(crate) types: HashMap<NodeId, Ty>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -69,15 +72,15 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Ident(_) => self.synth_ident(e),
             ExprKind::BinOp(op, l, r) => self.synth_binop(*op, l, r),
             ExprKind::UnaryOp(op, x) => self.synth_unaryop(*op, x),
-            // Tasks 5–6 land these. Recording `Ty::Error` here without a
+            ExprKind::Call(callee, args) => self.synth_call(callee, args, e.span),
+            ExprKind::StructLit(name, fields) => self.synth_struct_lit(e, name, fields),
+            ExprKind::FieldAccess(base, field) => self.synth_field_access(base, field),
+            // Task 6 lands these. Recording `Ty::Error` here without a
             // diagnostic prevents cascading errors.
-            ExprKind::Call(_, _)
-            | ExprKind::Index(_, _)
-            | ExprKind::FieldAccess(_, _)
+            ExprKind::Index(_, _)
             | ExprKind::VecLit(_)
             | ExprKind::MatLit(_)
             | ExprKind::Lambda(_)
-            | ExprKind::StructLit(_, _)
             | ExprKind::If(_)
             | ExprKind::Match(_, _)
             | ExprKind::Block(_) => Ty::Error,
@@ -158,6 +161,132 @@ impl<'a> TypeChecker<'a> {
                     ));
                     Ty::Error
                 }
+            }
+        }
+    }
+
+    /// Function call: synth callee, expect `Ty::Function(param_tys, ret)`,
+    /// check each argument against its declared param type, return `ret`.
+    /// Non-function callees emit `not_callable`; arity mismatches emit
+    /// `wrong_arity`. In both error cases we skip per-argument checking so
+    /// downstream diagnostics don't cascade.
+    fn synth_call(&mut self, callee: &Expr, args: &[Expr], call_span: Span) -> Ty {
+        let callee_ty = self.synth_expr(callee);
+        match callee_ty {
+            Ty::Error => Ty::Error,
+            Ty::Function(param_tys, ret_ty) => {
+                if param_tys.len() != args.len() {
+                    self.diagnostics.push(crate::sema::diag::wrong_arity(
+                        call_span,
+                        param_tys.len(),
+                        args.len(),
+                    ));
+                    // Don't check args on arity mismatch — the user has a
+                    // structural error and per-arg cascade would be noise.
+                    return *ret_ty;
+                }
+                for (arg, expected) in args.iter().zip(param_tys.iter()) {
+                    self.check_expr(arg, expected);
+                }
+                *ret_ty
+            }
+            other => {
+                self.diagnostics
+                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                Ty::Error
+            }
+        }
+    }
+
+    /// Struct literal: resolver records the struct's `DefId` against the
+    /// `StructLit` expression's NodeId. Each provided field is checked
+    /// against the struct's declared field type; missing/extra fields
+    /// each produce their own diagnostic.
+    fn synth_struct_lit(&mut self, e: &Expr, name: &str, fields: &[(String, Expr)]) -> Ty {
+        let Some(def_id) = self.resolutions.get(&e.id).copied() else {
+            // Resolver already reported the unknown struct name.
+            for (_, fexpr) in fields {
+                self.synth_expr(fexpr);
+            }
+            return Ty::Error;
+        };
+        let Some(declared_fields) = self.struct_fields.get(&def_id).cloned() else {
+            // The name resolved to something that isn't a struct (e.g. an
+            // enum constructor). Resolver may not have flagged this; just
+            // record `Ty::Error`. PR-3c may refine this with a clearer diag.
+            for (_, fexpr) in fields {
+                self.synth_expr(fexpr);
+            }
+            return Ty::Error;
+        };
+
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (fname, fexpr) in fields {
+            seen.insert(fname.as_str());
+            match declared_fields
+                .iter()
+                .find(|(declared, _)| declared == fname)
+            {
+                Some((_, declared_ty)) => {
+                    self.check_expr(fexpr, declared_ty);
+                }
+                None => {
+                    self.diagnostics
+                        .push(crate::sema::diag::extra_struct_field(e.span, name, fname));
+                    // Still record the expression's type for later passes.
+                    self.synth_expr(fexpr);
+                }
+            }
+        }
+        for (declared_name, _) in &declared_fields {
+            if !seen.contains(declared_name.as_str()) {
+                self.diagnostics
+                    .push(crate::sema::diag::missing_struct_field(
+                        e.span,
+                        name,
+                        declared_name,
+                    ));
+            }
+        }
+        Ty::Struct(def_id)
+    }
+
+    /// Field access: base must synthesize to `Ty::Struct(def_id)`. The
+    /// field name is looked up in `struct_fields[def_id]`. Unknown field
+    /// emits `field_unknown`; non-struct base emits a generic
+    /// `op_type_error` on field-access.
+    fn synth_field_access(&mut self, base: &Expr, field: &str) -> Ty {
+        let base_ty = self.synth_expr(base);
+        match &base_ty {
+            Ty::Error => Ty::Error,
+            Ty::Struct(def_id) => {
+                let struct_name = self
+                    .definitions
+                    .get(def_id)
+                    .map(|info| info.name.as_str())
+                    .unwrap_or("<struct>");
+                let Some(declared_fields) = self.struct_fields.get(def_id) else {
+                    return Ty::Error;
+                };
+                match declared_fields.iter().find(|(name, _)| name == field) {
+                    Some((_, ty)) => ty.clone(),
+                    None => {
+                        self.diagnostics.push(crate::sema::diag::field_unknown(
+                            base.span,
+                            struct_name,
+                            field,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
+            _ => {
+                self.diagnostics.push(crate::sema::diag::op_type_error(
+                    base.span,
+                    "field access",
+                    &base_ty,
+                ));
+                Ty::Error
             }
         }
     }
@@ -493,5 +622,91 @@ mod tests {
         let diags = diags_for("function f(): Int\n  return 1 + \"x\" + 2\nend");
         assert_eq!(diags.len(), 1, "diags: {:?}", diags);
         assert!(diags[0].message.contains("arithmetic"));
+    }
+
+    // ----- PR-3b Task 5: call / struct literal / field access -----
+
+    #[test]
+    fn call_with_correct_args_succeeds() {
+        compile_src(
+            "function add(a: Int, b: Int): Int\n  return a + b\nend\nfunction g(): Int\n  return add(1, 2)\nend",
+        );
+    }
+
+    #[test]
+    fn call_with_wrong_arity_diag() {
+        let diags = diags_for(
+            "function add(a: Int, b: Int): Int\n  return a + b\nend\nfunction g(): Int\n  return add(1)\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("expected 2, found 1"));
+    }
+
+    #[test]
+    fn call_with_wrong_arg_type_diag() {
+        let diags = diags_for(
+            "function add(a: Int, b: Int): Int\n  return a + b\nend\nfunction g(): Int\n  return add(true, 2)\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("type mismatch"));
+    }
+
+    #[test]
+    fn call_non_function_diag() {
+        let diags = diags_for("let x: Int = 5\nfunction f(): Int\n  return x(1)\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("not callable"));
+    }
+
+    #[test]
+    fn struct_literal_with_correct_fields_succeeds() {
+        compile_src(
+            "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Point { x: 1.0, y: 2.0 }",
+        );
+    }
+
+    #[test]
+    fn struct_literal_missing_field_diag() {
+        let diags = diags_for(
+            "struct Point\n  x: Scalar\n  y: Scalar\nend\nlet p: Point = Point { x: 1.0 }",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("missing field `y`"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn struct_literal_extra_field_diag() {
+        let diags =
+            diags_for("struct Point\n  x: Scalar\nend\nlet p: Point = Point { x: 1.0, y: 2.0 }");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("`y`"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn field_access_succeeds() {
+        compile_src(
+            "struct Point\n  x: Scalar\n  y: Scalar\nend\nfunction f(p: Point): Scalar\n  return p.x\nend",
+        );
+    }
+
+    #[test]
+    fn field_access_unknown_field_diag() {
+        let diags = diags_for(
+            "struct Point\n  x: Scalar\nend\nfunction f(p: Point): Scalar\n  return p.zzz\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("`zzz`"),
+            "msg: {}",
+            diags[0].message
+        );
     }
 }

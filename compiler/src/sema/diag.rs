@@ -47,6 +47,38 @@ pub fn non_bool_condition(span: Span, ty: &Ty) -> Diagnostic {
     )
 }
 
+pub fn wrong_arity(span: Span, expected: usize, actual: usize) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("wrong number of arguments: expected {expected}, found {actual}"),
+    )
+}
+
+pub fn not_callable(span: Span, ty: &Ty) -> Diagnostic {
+    Diagnostic::type_error(span, format!("type `{}` is not callable", format_ty(ty)))
+}
+
+pub fn field_unknown(span: Span, struct_name: &str, field: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("struct `{struct_name}` has no field `{field}`"),
+    )
+}
+
+pub fn missing_struct_field(span: Span, struct_name: &str, field: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("missing field `{field}` in struct `{struct_name}` literal"),
+    )
+}
+
+pub fn extra_struct_field(span: Span, struct_name: &str, field: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("struct `{struct_name}` has no field `{field}`; extra field in literal"),
+    )
+}
+
 /// Render a `Ty` for diagnostic messages. PR-3b uses base names; PR-3d's
 /// `Dimension::format_si` integrates here once units are implemented.
 fn format_ty(ty: &Ty) -> String {
