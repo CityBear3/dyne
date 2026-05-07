@@ -340,3 +340,21 @@ fn compile_pow_diag_uses_caret_syntax() {
         diags
     );
 }
+
+#[test]
+fn compile_user_redeclares_builtin_option_yields_diag() {
+    // Negative interaction with built-ins: user declares an `enum
+    // Option<T>` that collides with the built-in. Resolver fires
+    // `duplicate_name` against the built-in's pre-existing entry.
+    // Validates that built-ins are visible to the resolver's hoist
+    // (otherwise no collision would surface) AND that the user gets a
+    // meaningful diag rather than a silent override.
+    let diags = dyne::compile("enum Option<T>\n  MyVariant(T)\nend").unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("`Option`") && d.message.contains("already defined")),
+        "expected duplicate-name diag for Option, got: {:?}",
+        diags
+    );
+}

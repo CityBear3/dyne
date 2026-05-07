@@ -34,6 +34,7 @@ use crate::ast::Program;
 use crate::lexer::tokenize;
 use crate::parser::parse_with_node_offset;
 
+const BUILTINS_PATH: &str = "compiler/builtins/builtins.dy";
 const BUILTINS_SOURCE: &str = include_str!("../../builtins/builtins.dy");
 
 /// Output of `load_builtins`. Carries the parsed program and the next
@@ -45,12 +46,14 @@ pub(crate) struct BuiltinsContext {
 }
 
 /// Tokenize + parse `builtins.dy`. Panics on any failure — built-ins
-/// errors are compile-time bugs and never surface to user code.
+/// errors are compile-time bugs and never surface to user code. Panic
+/// messages name the source file path so a regression in the
+/// declarations is easy to locate during development.
 pub(crate) fn load_builtins() -> BuiltinsContext {
-    let tokens =
-        tokenize(BUILTINS_SOURCE).unwrap_or_else(|e| panic!("built-ins lex failed: {e:?}"));
+    let tokens = tokenize(BUILTINS_SOURCE)
+        .unwrap_or_else(|e| panic!("built-ins lex failed in {BUILTINS_PATH}: {e:?}"));
     let (program, next_node_id) = parse_with_node_offset(tokens, 0)
-        .unwrap_or_else(|e| panic!("built-ins parse failed: {e:?}"));
+        .unwrap_or_else(|e| panic!("built-ins parse failed in {BUILTINS_PATH}: {e:?}"));
     BuiltinsContext {
         program,
         next_node_id,

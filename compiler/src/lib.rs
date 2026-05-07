@@ -25,6 +25,13 @@ use crate::diag::Diagnostic;
 /// bug and panics; user diagnostics carry the user-source span (the
 /// built-ins occupy NodeIds 0..N and span positions in `builtins.dy`,
 /// disjoint from user-source NodeIds and spans).
+///
+/// **Id-ordering invariant**: built-ins are parsed first (NodeIds
+/// 0..N) and resolved before user code. Their DefIds are therefore
+/// allocated first by the resolver — `Option`'s DefId is always
+/// strictly less than any user-defined enum's DefId in the same
+/// program. Downstream passes that compare DefIds for ordering must
+/// not assume user definitions come first.
 pub fn compile(source: &str) -> Result<TypedProgram, Vec<Diagnostic>> {
     // Phase 1: built-ins (panics on failure).
     let builtins_ctx = sema::builtins::load_builtins();

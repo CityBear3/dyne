@@ -1809,4 +1809,50 @@ mod tests {
             "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(oo: Maybe<Maybe<Int>>): Int\n  return match oo\n    case Some(Some(x)) then x\n    case Some(Nothing) then 0\n    case Nothing then -1\n  end\nend",
         );
     }
+
+    // Exhaustiveness coverage gaps surfaced by code-quality review:
+    // pin String require_catchall behavior + the no-cascade skip path
+    // for scrutinees whose type is `Ty::Error` (an upstream diag was
+    // already pinned and exhaust must not pile on). Scalar's
+    // require_catchall path is structurally identical to Int's
+    // (`match_int_requires_wildcard_diag`); a dedicated Scalar test
+    // can't be written because float-literal patterns are rejected
+    // at parse phase before exhaust runs.
+
+    #[test]
+    fn match_string_requires_wildcard_diag() {
+        let diags = diags_for(
+            "function f(s: String): Int\n  return match s\n    case \"hi\" then 1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("wildcard"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_string_with_wildcard_passes() {
+        compile_src(
+            "function f(s: String): Int\n  return match s\n    case \"hi\" then 1\n    case _ then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_error_scrutinee_skips_exhaustiveness() {
+        // The scrutinee references an undefined name → its synthesized
+        // type is `Ty::Error`. exhaust must skip (no-cascade) so the
+        // single "undefined name" diag isn't joined by a spurious
+        // "non-exhaustive" diag.
+        let diags = diags_for(
+            "function f(): Int\n  return match undefined_var\n    case _ then 0\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("undefined_var"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
 }
