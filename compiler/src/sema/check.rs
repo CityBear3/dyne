@@ -387,11 +387,11 @@ mod tests {
     #[test]
     fn synth_addition_int_string_diag() {
         let diags = diags_for("function f(): Int\n  return 1 + \"x\"\nend");
-        assert!(
-            diags.iter().any(|d| d.message.contains("arithmetic")),
-            "diags: {:?}",
-            diags
-        );
+        // No-cascade: the arithmetic mismatch is the only diagnostic;
+        // unify_or_diag silently returns when the synthesized type is
+        // already `Ty::Error`.
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("arithmetic"));
     }
 
     #[test]
@@ -407,31 +407,22 @@ mod tests {
     #[test]
     fn logical_and_requires_both_bool() {
         let diags = diags_for("function f(): Bool\n  return true and 1\nend");
-        assert!(
-            diags.iter().any(|d| d.message.contains("logical")),
-            "diags: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("logical"));
     }
 
     #[test]
     fn unary_neg_on_bool_diag() {
         let diags = diags_for("function f(): Int\n  return -true\nend");
-        assert!(
-            diags.iter().any(|d| d.message.contains("unary")),
-            "diags: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("unary"));
     }
 
     #[test]
     fn unary_not_on_int_diag() {
         let diags = diags_for("function f(): Bool\n  return not 5\nend");
-        assert!(
-            diags.iter().any(|d| d.message.contains("not")),
-            "diags: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("not"));
     }
 
     #[test]
@@ -442,10 +433,7 @@ mod tests {
     #[test]
     fn return_value_type_mismatch_diag() {
         let diags = diags_for("function f(): Int\n  return true\nend");
-        assert!(
-            diags.iter().any(|d| d.message.contains("type mismatch")),
-            "diags: {:?}",
-            diags
-        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("type mismatch"));
     }
 }
