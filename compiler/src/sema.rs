@@ -5,6 +5,7 @@
 
 pub mod diag;
 pub mod resolve;
+pub mod ty;
 
 use std::collections::HashMap;
 
