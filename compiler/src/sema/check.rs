@@ -1346,6 +1346,41 @@ mod tests {
     }
 
     #[test]
+    fn vec_add_in_int_context_emits_diag() {
+        // G2 (broader scope): `synth_arith`'s Vec/Mat arm previously
+        // returned `Ty::Error`, silently swallowing cross-context
+        // mismatches. After the fix, `Vec + Vec` returns the input Vec
+        // shape so the function's `Int` return type triggers an accurate
+        // "expected Int, found Vec<3>" diagnostic. Reverting the
+        // synth_arith Vec/Mat arms to `Ty::Error` would re-break this.
+        let diags = diags_for("function f(v: Vec<3>): Int\n  return v + v\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Int") && diags[0].message.contains("Vec"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn vec_pow_in_int_context_emits_diag() {
+        // G2 (broader scope): `synth_pow`'s Vec/Mat arm previously
+        // returned `Ty::Error`, silently swallowing cross-context
+        // mismatches. After the fix, `Vec ^ Int` returns the input Vec
+        // shape so the function's `Int` return type triggers an accurate
+        // "expected Int, found Vec<3>" diagnostic. dyne uses `^` for
+        // power; reverting the synth_pow Vec/Mat arms to early-return
+        // `Ty::Error` would re-break this.
+        let diags = diags_for("function f(v: Vec<3>): Int\n  return v ^ 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Int") && diags[0].message.contains("Vec"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
     fn duplicate_top_level_function_does_not_cascade_to_first_body() {
         // G3: when two top-level items share a name, the resolver emits
         // `duplicate_name` and re-uses the first DefId. signature_pass
