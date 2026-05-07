@@ -907,7 +907,7 @@ impl<'a> TypeChecker<'a> {
                 self.diagnostics.push(crate::sema::diag::mat_shape_mismatch(
                     e.span,
                     (rows.len(), cols),
-                    (rows.len(), row.len()),
+                    row.len(),
                 ));
                 // Bail on shape mismatch to keep the no-cascade invariant.
                 return Ty::Error;

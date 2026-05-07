@@ -106,16 +106,22 @@ pub fn not_a_value(span: Span, kind: DefKind, name: &str) -> Diagnostic {
     Diagnostic::type_error(span, format!("`{name}` is a {kind_str}, not a value"))
 }
 
+/// `expected` is the declared `(rows, cols)`; `actual_cols` is the
+/// length of the offending row. The previous signature passed the row
+/// count alongside the column count for the actual shape, but every
+/// call site computed the row count as `rows.len()` (the same value
+/// `expected.0` carried), so the diag never read it. Simplified to
+/// take only the column count of the row that triggered the error.
 pub fn mat_shape_mismatch(
     span: Span,
     expected: (usize, usize),
-    actual: (usize, usize),
+    actual_cols: usize,
 ) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(
             "matrix shape mismatch: expected {} rows × {} cols, found a row with {} cells",
-            expected.0, expected.1, actual.1
+            expected.0, expected.1, actual_cols
         ),
     )
 }
