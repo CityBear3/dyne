@@ -69,6 +69,16 @@ impl Dimension {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeVarId(pub u32);
 
+/// Stored per enum-variant DefId in `TypedProgram::variant_payloads`.
+/// Pairs the parent enum's DefId with the lowered payload types so a
+/// downstream walk can recover the variant's parent and arity in one
+/// lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariantPayload {
+    pub parent_enum: DefId,
+    pub payload: Vec<Ty>,
+}
+
 /// Lower an AST `Type` to an internal `Ty`.
 ///
 /// Diagnostics are accumulated; on any error, returns `Ty::Error` for the
