@@ -110,15 +110,77 @@ impl<'a> TypeChecker<'a> {
         // Implicit Int → dimensionless Scalar conversion (DD line 143). Only
         // applies in checking mode and only when the expected dimension is
         // `ZERO`. Synthesis never widens an Int.
-        if let (ExprKind::IntLit(_), Ty::Scalar(d)) = (&e.kind, expected)
+        //
+        // Resolve `expected` through the unification table first so a `Var`
+        // that's been bound to `Scalar(0)` by an outer bidirectional Call
+        // flow (see `check_call` below) is seen as its concrete shape here.
+        // Without this, `Mk(1)` against `Box<Scalar>` wouldn't widen at the
+        // arg position because the per-arg `expected` is `Var(α)`, not
+        // `Scalar(0)`.
+        let resolved_expected = self.unify_table.resolve(expected);
+        if let (ExprKind::IntLit(_), Ty::Scalar(d)) = (&e.kind, &resolved_expected)
             && d.is_dimensionless()
         {
             let ty = Ty::Scalar(Dimension::ZERO);
             return self.record(e.id, ty);
         }
+        // Bidirectional Call: route `Call` exprs through `check_call` so
+        // outer `expected` unifies with the callee's return type BEFORE
+        // per-arg checking. This propagates outer constraints into
+        // type-Vars introduced by `instantiate_variant_schema`, enabling
+        // arg-position widening (e.g. `Mk(1): Box<Scalar>` → α=Scalar
+        // first, then the per-arg IntLit-gate fires).
+        if let ExprKind::Call(callee, args) = &e.kind {
+            return self.check_call(e, callee, args, expected);
+        }
         let synthesized = self.synth_expr(e);
         self.unify_or_diag(&synthesized, expected, e.span);
         synthesized
+    }
+
+    /// Bidirectional check for `Call` expressions. Mirrors `synth_call`'s
+    /// arity / arg-type / not-callable diagnostics, but pre-unifies the
+    /// callee's return type with the outer `expected` so type-Vars in the
+    /// signature pick up outer constraints before per-arg checking.
+    fn check_call(&mut self, e: &Expr, callee: &Expr, args: &[Expr], expected: &Ty) -> Ty {
+        let callee_ty = self.synth_expr(callee);
+        let resolved = self.unify_table.resolve(&callee_ty);
+        let result = match resolved {
+            Ty::Error => Ty::Error,
+            Ty::Function(param_tys, ret_ty) => {
+                // Step 1: silently bind `ret_ty` against the outer
+                // expected. Final `unify_or_diag` below catches any
+                // mismatch that survives — Err here would be redundant.
+                let _ = self.unify_table.unify(&ret_ty, expected);
+                if param_tys.len() != args.len() {
+                    self.diagnostics.push(crate::sema::diag::wrong_arity(
+                        e.span,
+                        param_tys.len(),
+                        args.len(),
+                    ));
+                    // Suppress cascade — wrong_arity already pinned the
+                    // structural error; the outer `unify_or_diag` would
+                    // otherwise pile a "type mismatch" on top.
+                    Ty::Error
+                } else {
+                    for (arg, p_ty) in args.iter().zip(param_tys.iter()) {
+                        self.check_expr(arg, p_ty);
+                    }
+                    *ret_ty
+                }
+            }
+            other => {
+                self.diagnostics
+                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                Ty::Error
+            }
+        };
+        // Final unify catches surviving mismatches (e.g. wrong arg type
+        // didn't bind a Var the outer expected required). `Ty::Error`
+        // unifies with anything so the no-cascade arity / not-callable
+        // paths don't fire a second diag.
+        self.unify_or_diag(&result, expected, e.span);
+        self.record(e.id, result)
     }
 
     fn synth_ident(&mut self, e: &Expr) -> Ty {
@@ -126,13 +188,21 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error; // resolver already reported
         };
         if let Some(ty) = self.def_types.get(&def_id).cloned() {
+            // Enum-variant schemas may carry `Ty::Param(i)` sentinels from
+            // signature_pass. Instantiate with fresh `Ty::Var`s per use
+            // site so two references to the same variant get independent
+            // inference variables — `Just(1)` and `Just("x")` in different
+            // contexts must not share a single Var (which would conflict).
+            if self.is_variant_def(def_id) {
+                return self.instantiate_variant_schema(def_id, &ty);
+            }
             return ty;
         }
-        // Definition exists but no `def_types` entry: distinguish a
-        // type-level definition used as a value (Struct / Enum, fixable
-        // diagnostic) from PR-3c-deferred shapes (EnumVariant), which
-        // continue to silently return `Ty::Error` to preserve the
-        // no-cascade invariant until variant-constructor typing lands.
+        // Definition exists but no `def_types` entry: type-level definition
+        // (Struct / Enum) used as a value gets a focused diagnostic. Other
+        // kinds (e.g. orphan EnumVariant — shouldn't happen post-Task-3)
+        // fall through to silent Ty::Error so the no-cascade invariant
+        // holds.
         if let Some(info) = self.definitions.get(&def_id) {
             match info.kind {
                 DefKind::Struct | DefKind::Enum => {
@@ -141,13 +211,39 @@ impl<'a> TypeChecker<'a> {
                     self.diagnostics
                         .push(crate::sema::diag::not_a_value(e.span, kind, &name));
                 }
-                // EnumVariant: PR-3c will populate `def_types` with
-                // `Ty::Function(payload, Ty::Enum(parent, ...))`. Until
-                // then, silent `Ty::Error` keeps the no-cascade invariant.
                 _ => {}
             }
         }
         Ty::Error
+    }
+
+    /// True if `def_id` is an enum variant. Used by `synth_ident` to gate
+    /// schema instantiation.
+    fn is_variant_def(&self, def_id: DefId) -> bool {
+        self.definitions
+            .get(&def_id)
+            .is_some_and(|info| matches!(info.kind, DefKind::EnumVariant))
+    }
+
+    /// Walk the variant's parent enum to count its type-parameter arity,
+    /// allocate that many fresh `Ty::Var`s, then substitute every
+    /// `Ty::Param(i)` in the schema with the corresponding fresh Var.
+    /// Non-generic variants (parent type_params is empty) short-circuit
+    /// to the schema unchanged — no allocation, no walk.
+    fn instantiate_variant_schema(&mut self, variant_def_id: DefId, schema: &Ty) -> Ty {
+        let n_params = self
+            .variant_payloads
+            .get(&variant_def_id)
+            .and_then(|vp| self.definitions.get(&vp.parent_enum))
+            .map(|info| info.type_params.len())
+            .unwrap_or(0);
+        if n_params == 0 {
+            return schema.clone();
+        }
+        let type_args: Vec<Ty> = (0..n_params)
+            .map(|_| Ty::Var(self.unify_table.fresh()))
+            .collect();
+        schema.subst_with_args(&type_args)
     }
 
     fn synth_binop(&mut self, op: BinOp, l: &Expr, r: &Expr) -> Ty {
@@ -431,18 +527,19 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn unify_or_diag(&mut self, actual: &Ty, expected: &Ty, span: Span) {
-        // Resolve through the unification table first so any `Ty::Var`
-        // chains collapse to concrete types before we compare. PR-3b only
-        // produces concrete types (resolve is a no-op for those); the
-        // plumbing is in place for PR-3c's constructor inference.
-        let actual = self.unify_table.resolve(actual);
-        let expected = self.unify_table.resolve(expected);
-        if matches!(actual, Ty::Error) || matches!(expected, Ty::Error) {
-            return;
-        }
-        if actual != expected {
+        // Run structural unification — this both compares and BINDS Vars.
+        // PR-3b's resolve+compare worked because all types were concrete;
+        // PR-3c's variant instantiation introduces Vars whose binding has
+        // to flow through the unification table. `unify_table.unify`
+        // returns Err on outermost mismatch (with already-resolved Tys);
+        // Err's two Tys are then formatted into the user-facing diagnostic.
+        // `Ty::Error` unifies with anything, so cascade suppression works.
+        if let Err((actual_resolved, expected_resolved)) = self.unify_table.unify(actual, expected)
+        {
             self.diagnostics.push(crate::sema::diag::type_mismatch_full(
-                span, &expected, &actual,
+                span,
+                &expected_resolved,
+                &actual_resolved,
             ));
         }
     }
@@ -1380,5 +1477,90 @@ mod tests {
             "msg: {}",
             diags[0].message
         );
+    }
+
+    // ----- PR-3c Task 4: variant constructor instantiation -----
+
+    #[test]
+    fn variant_call_non_generic_typechecks() {
+        // Closes PR-3b's silent gap. `Just(1)` is now type-checked: the
+        // variant's schema `Function([Int], Enum(maybe, []))` is retrieved
+        // by synth_ident, then synth_call checks the arg against `Int`.
+        compile_src(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Maybe\n  return Just(1)\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_non_generic_wrong_arg_diag() {
+        let diags = diags_for(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Maybe\n  return Just(\"oops\")\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Int") && diags[0].message.contains("String"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn variant_call_non_generic_wrong_arity_diag() {
+        let diags = diags_for(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Maybe\n  return Just(1, 2)\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("expected 1") && diags[0].message.contains("found 2"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn variant_call_generic_inferred_int() {
+        // `Just(1)` against expected `Maybe<Int>`: synth_ident allocates a
+        // fresh Var for T, returns `Function([Var(α)], Enum(maybe, [Var(α)]))`;
+        // synth_call binds α=Int via the arg check; the function's expected
+        // return `Maybe<Int>` unifies cleanly.
+        compile_src(
+            "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction f(): Maybe<Int>\n  return Just(1)\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_generic_inferred_string_independent() {
+        // Two `Just` calls in different functions get independent fresh
+        // Vars: one binds T=Int, the other T=String. Without per-use-site
+        // instantiation they would share a single Var and conflict.
+        compile_src(
+            "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction ints(): Maybe<Int>\n  return Just(1)\nend\nfunction strs(): Maybe<String>\n  return Just(\"hi\")\nend",
+        );
+    }
+
+    #[test]
+    fn variant_nullary_value_in_context() {
+        // `Nothing` used as value: synth_ident retrieves the bare schema
+        // `Enum(maybe, [Param(0)])`, instantiates Param→Var, returns
+        // `Enum(maybe, [Var(α)])`. unify_or_diag against expected
+        // `Maybe<Int>` binds α=Int.
+        compile_src(
+            "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction f(): Maybe<Int>\n  return Nothing\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_two_param_enum_inferred() {
+        compile_src(
+            "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(): Result<Int, String>\n  return Ok(42)\nend\nfunction g(): Result<Int, String>\n  return Err(\"boom\")\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_generic_arg_int_to_scalar_widening() {
+        // The `Int → Scalar(ZERO)` implicit-conversion gate should fire at
+        // a variant-constructor arg boundary because synth_call routes
+        // each arg through `check_expr` (which holds the gate).
+        compile_src("enum Box<T>\n  Mk(T)\nend\nfunction f(): Box<Scalar>\n  return Mk(1)\nend");
     }
 }

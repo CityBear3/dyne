@@ -96,6 +96,50 @@ pub struct VariantPayload {
     pub payload: Vec<Ty>,
 }
 
+impl Ty {
+    /// Substitute every `Ty::Param(i)` in `self` with `type_args[i]`.
+    ///
+    /// Used in two places:
+    ///   - Task 4 (`synth_ident`): build `type_args` as fresh `Ty::Var`s
+    ///     so each variant-constructor use site gets independent inference
+    ///     variables. `Some(1)` and `Some("x")` in the same function then
+    ///     infer to different `Maybe<Int>` / `Maybe<String>`.
+    ///   - Task 5 (`check_pattern`): build `type_args` from the resolved
+    ///     scrutinee's enum arguments so a `case Some(x) then ...` pattern
+    ///     binds `x` to the concrete payload type, not `Param(0)`.
+    ///
+    /// `Param(i)` with `i >= type_args.len()` returns `Ty::Error` rather
+    /// than panicking — the schema/args mismatch indicates a sema bug
+    /// upstream, and Error suppresses cascade.
+    pub(crate) fn subst_with_args(&self, type_args: &[Ty]) -> Ty {
+        match self {
+            Ty::Param(i) => type_args.get(*i).cloned().unwrap_or(Ty::Error),
+            Ty::Int
+            | Ty::Bool
+            | Ty::String
+            | Ty::Scalar(_)
+            | Ty::Mat(_, _)
+            | Ty::Vec(_, _)
+            | Ty::Struct(_)
+            | Ty::Var(_)
+            | Ty::Error => self.clone(),
+            Ty::Array(t) => Ty::Array(Box::new(t.subst_with_args(type_args))),
+            Ty::Dict(k, v) => Ty::Dict(
+                Box::new(k.subst_with_args(type_args)),
+                Box::new(v.subst_with_args(type_args)),
+            ),
+            Ty::Function(args, ret) => Ty::Function(
+                args.iter().map(|a| a.subst_with_args(type_args)).collect(),
+                Box::new(ret.subst_with_args(type_args)),
+            ),
+            Ty::Enum(def, args) => Ty::Enum(
+                *def,
+                args.iter().map(|a| a.subst_with_args(type_args)).collect(),
+            ),
+        }
+    }
+}
+
 /// Lower an AST `Type` to an internal `Ty`.
 ///
 /// Diagnostics are accumulated; on any error, returns `Ty::Error` for the

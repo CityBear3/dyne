@@ -40,10 +40,23 @@ impl Table {
         }
     }
 
-    /// Unify two types. On failure, returns `Err((a, b))` with the
-    /// conflicting (resolved) types. `Ty::Error` unifies with anything to
+    /// Unify two types structurally. On failure, returns `Err((a, b))`
+    /// with the conflicting (resolved) types — the outermost mismatch
+    /// when the failure was nested. `Ty::Error` unifies with anything to
     /// preserve the no-cascade invariant downstream.
-    #[allow(dead_code)] // Wired by PR-3c's enum constructor inference.
+    ///
+    /// Compound types (`Function`, `Enum`, `Array`, `Dict`) recurse: their
+    /// children unify pairwise. Without recursion, a nested `Ty::Var` (e.g.
+    /// `Enum(maybe, [Var(α)])` vs `Enum(maybe, [Int])`) would never get
+    /// bound because outer-only equality fails. PR-3c's variant-constructor
+    /// inference relies on this — `Just(1)`'s synthesized
+    /// `Function([Var(α)], Enum(maybe, [Var(α)]))` needs the arg-Var to
+    /// pick up `Int` from the per-arg `check_expr`, then the function-
+    /// return unification picks up `Maybe<Int>` cleanly.
+    ///
+    /// No occurs-check: dyne has no recursive type aliases, and Enums/
+    /// Structs reference DefIds (not nested Tys), so no Ty cycles can
+    /// form by construction.
     pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
         let a = self.resolve(a);
         let b = self.resolve(b);
@@ -65,12 +78,33 @@ impl Table {
             (a @ Ty::Param(_), b) | (a, b @ Ty::Param(_)) => Err((a, b)),
             // Identical-var early-out: without this, the next arm would
             // bind `cells[v] = Some(Var(v))`, which makes `resolve()`
-            // infinite-loop. Latent in 3b (concrete-only) but PR-3c will
-            // hit this when the same scrutinee var unifies twice.
+            // infinite-loop. Latent in 3b (concrete-only) but PR-3c hits
+            // this when the same scrutinee var unifies twice.
             (Ty::Var(v), Ty::Var(w)) if v == w => Ok(()),
             (Ty::Var(v), other) | (other, Ty::Var(v)) => {
                 self.cells[v.0 as usize] = Some(other);
                 Ok(())
+            }
+            (Ty::Function(args_a, ret_a), Ty::Function(args_b, ret_b))
+                if args_a.len() == args_b.len() =>
+            {
+                for (l, r) in args_a.iter().zip(args_b.iter()) {
+                    self.unify(l, r)?;
+                }
+                self.unify(&ret_a, &ret_b)
+            }
+            (Ty::Enum(da, args_a), Ty::Enum(db, args_b))
+                if da == db && args_a.len() == args_b.len() =>
+            {
+                for (l, r) in args_a.iter().zip(args_b.iter()) {
+                    self.unify(l, r)?;
+                }
+                Ok(())
+            }
+            (Ty::Array(t_a), Ty::Array(t_b)) => self.unify(&t_a, &t_b),
+            (Ty::Dict(k_a, v_a), Ty::Dict(k_b, v_b)) => {
+                self.unify(&k_a, &k_b)?;
+                self.unify(&v_a, &v_b)
             }
             (a, b) if a == b => Ok(()),
             (a, b) => Err((a, b)),
