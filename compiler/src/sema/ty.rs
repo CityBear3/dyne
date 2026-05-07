@@ -373,6 +373,9 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(ty, Ty::Error);
-        assert!(diags.iter().any(|d| d.message.contains("PR-3c")));
+        // Pin no-cascade: lower_type must emit exactly one PR-3c-deferral
+        // diagnostic for this annotation, not a stack of them.
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(diags[0].message.contains("PR-3c"));
     }
 }

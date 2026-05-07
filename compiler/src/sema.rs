@@ -158,6 +158,19 @@ fn signature_pass(
                 let Some(def_id) = name_to_def.get(f.name.as_str()).copied() else {
                     continue;
                 };
+                // First-writer-wins: when two top-level items share a name,
+                // the resolver emits `duplicate_name` and re-uses the first
+                // DefId. Skipping the second's lowering keeps `def_types`
+                // consistent with the first body's declared signature and
+                // avoids spurious cascade diagnostics — e.g. without this
+                // gate, `function f(): Int return 0 end` followed by
+                // `function f(): Bool return true end` would type-check
+                // the FIRST body against `Bool`. The gate sits before
+                // `lower_type` so a duplicate's invalid annotation does
+                // not fire redundant diagnostics either.
+                if def_types.contains_key(&def_id) {
+                    continue;
+                }
                 let param_tys: Vec<Ty> = f
                     .params
                     .iter()
@@ -191,6 +204,11 @@ fn signature_pass(
                 let Some(def_id) = name_to_def.get(s.name.as_str()).copied() else {
                     continue;
                 };
+                // First-writer-wins (see Item::Function arm). `struct_fields`
+                // is the canonical "is this struct already lowered" probe.
+                if struct_fields.contains_key(&def_id) {
+                    continue;
+                }
                 let fields: Vec<(String, Ty)> = s
                     .fields
                     .iter()
@@ -212,6 +230,12 @@ fn signature_pass(
                     else {
                         continue;
                     };
+                    // First-writer-wins per variant DefId. Two enums with
+                    // colliding variant names would otherwise overwrite
+                    // each other's payload entries.
+                    if variant_payloads.contains_key(&variant_def_id) {
+                        continue;
+                    }
                     let payload: Vec<Ty> = variant
                         .payload
                         .iter()
@@ -230,6 +254,10 @@ fn signature_pass(
                 let Some(def_id) = name_to_def.get(l.name.as_str()).copied() else {
                     continue;
                 };
+                // First-writer-wins (see Item::Function arm).
+                if def_types.contains_key(&def_id) {
+                    continue;
+                }
                 let ty = lower_type(&l.ty, resolutions, definitions, diags);
                 def_types.insert(def_id, ty);
             }

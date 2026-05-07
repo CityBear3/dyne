@@ -13,7 +13,9 @@
 //! - Task 6: `IfExpr` / `Match` / `While` / `For` / `VecLit` / `MatLit` /
 //!   `Index` / `Block`-as-expr; introduces `unify::Table` for match-arm
 //!   unification. Vec/Mat *operator* shape rules (Vec+Vec, Mat·Vec, etc.)
-//!   are still deferred — `synth_arith` returns `Ty::Error` for those.
+//!   return an approximate Vec/Mat result so cross-context unification
+//!   produces accurate diagnostics; PR-3d (Option β: silent ZERO-strip)
+//!   activates real unit propagation through these operators.
 
 use std::collections::HashMap;
 
@@ -120,7 +122,29 @@ impl<'a> TypeChecker<'a> {
         let Some(def_id) = self.resolutions.get(&e.id).copied() else {
             return Ty::Error; // resolver already reported
         };
-        self.def_types.get(&def_id).cloned().unwrap_or(Ty::Error)
+        if let Some(ty) = self.def_types.get(&def_id).cloned() {
+            return ty;
+        }
+        // Definition exists but no `def_types` entry: distinguish a
+        // type-level definition used as a value (Struct / Enum, fixable
+        // diagnostic) from PR-3c-deferred shapes (EnumVariant), which
+        // continue to silently return `Ty::Error` to preserve the
+        // no-cascade invariant until variant-constructor typing lands.
+        if let Some(info) = self.definitions.get(&def_id) {
+            match info.kind {
+                DefKind::Struct | DefKind::Enum => {
+                    let name = info.name.clone();
+                    let kind = info.kind;
+                    self.diagnostics
+                        .push(crate::sema::diag::not_a_value(e.span, kind, &name));
+                }
+                // EnumVariant: PR-3c will populate `def_types` with
+                // `Ty::Function(payload, Ty::Enum(parent, ...))`. Until
+                // then, silent `Ty::Error` keeps the no-cascade invariant.
+                _ => {}
+            }
+        }
+        Ty::Error
     }
 
     fn synth_binop(&mut self, op: BinOp, l: &Expr, r: &Expr) -> Ty {
@@ -148,10 +172,14 @@ impl<'a> TypeChecker<'a> {
             UnaryOp::Neg => match &xt {
                 Ty::Int => Ty::Int,
                 Ty::Scalar(d) => Ty::Scalar(*d),
-                // Vec/Mat negation is valid dyne; Task 6 lands the rule.
-                // Suppress the diagnostic here so the no-cascade invariant
-                // holds.
-                Ty::Vec(_, _) | Ty::Mat(_, _) => Ty::Error,
+                // Vec/Mat negation is valid dyne. The result type is
+                // approximate (true unit propagation lands in PR-3d under
+                // Option β: silent ZERO-strip per design memo); returning
+                // the input type rather than `Ty::Error` lets cross-context
+                // unification surface accurate "expected T, found Vec/Mat"
+                // diagnostics instead of silently swallowing them.
+                Ty::Vec(n, d) => Ty::Vec(*n, *d),
+                Ty::Mat(m, n) => Ty::Mat(*m, *n),
                 _ => {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
                         x.span,
@@ -306,9 +334,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Arithmetic on `Int` / `Scalar`. Vec/Mat arithmetic is valid dyne but
-    /// lands in Task 6; here it returns `Ty::Error` without a diagnostic so
-    /// the no-cascade invariant holds.
+    /// Arithmetic on `Int` / `Scalar` / `Vec` / `Mat`. The Vec/Mat result
+    /// type is approximate (true unit propagation lands in PR-3d under
+    /// Option β); returning a Vec/Mat shape rather than `Ty::Error` lets
+    /// cross-context unification surface accurate diagnostics rather than
+    /// silently swallowing them.
     fn synth_arith(&mut self, l: &Ty, r: &Ty, l_span: Span) -> Ty {
         match (l, r) {
             (Ty::Int, Ty::Int) => Ty::Int,
@@ -316,8 +346,13 @@ impl<'a> TypeChecker<'a> {
                 Ty::Scalar(Dimension::ZERO)
             }
             (Ty::Scalar(_), Ty::Scalar(_)) => Ty::Scalar(Dimension::ZERO),
-            // Defer to Task 6 silently.
-            (Ty::Vec(_, _) | Ty::Mat(_, _), _) | (_, Ty::Vec(_, _) | Ty::Mat(_, _)) => Ty::Error,
+            // Vec/Mat arithmetic: pick the Vec/Mat operand's shape so
+            // cross-context mismatch surfaces. Mat takes precedence over
+            // Vec when both are present (e.g. Mat·Vec → Mat-shaped is
+            // wrong but PR-3d will refine; for now we only need a
+            // non-Error type so unify_or_diag can fire).
+            (Ty::Mat(m, n), _) | (_, Ty::Mat(m, n)) => Ty::Mat(*m, *n),
+            (Ty::Vec(n, d), _) | (_, Ty::Vec(n, d)) => Ty::Vec(*n, *d),
             _ => {
                 self.diagnostics.push(crate::sema::diag::type_mismatch(
                     l_span,
@@ -328,13 +363,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Pow: base must be `Int` or `Scalar`; exponent must be `Int`.
+    /// Pow: base must be `Int` / `Scalar` / `Vec` / `Mat`; exponent must
+    /// be `Int`. Vec/Mat semantics (element-wise vs. linear-algebra power)
+    /// land in PR-3d; here we mirror `synth_arith` and return the input
+    /// shape so cross-context mismatch unifications still fire.
     fn synth_pow(&mut self, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
         let result = match l {
             Ty::Int => Ty::Int,
             Ty::Scalar(d) => Ty::Scalar(*d),
-            // Vec/Mat power is not yet decided; defer silently.
-            Ty::Vec(_, _) | Ty::Mat(_, _) => return Ty::Error,
+            // Vec/Mat power is not yet decided semantically; PR-3d picks
+            // the rule. Until then return the input shape so unification
+            // produces accurate diagnostics rather than silent swallow.
+            Ty::Vec(n, d) => Ty::Vec(*n, *d),
+            Ty::Mat(m, n) => Ty::Mat(*m, *n),
             _ => Ty::Error,
         };
         if !matches!(r, Ty::Int) {
@@ -404,15 +445,26 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_function(&mut self, f: &FunctionDef) {
-        let expected_return = self
+        // Pin the lookup to (kind, name, span). For a *duplicate* top-level
+        // function, the resolver only registered the FIRST definition under
+        // this name, so the second's span won't match any entry in
+        // `definitions`. Skip the body walk entirely in that case so we
+        // don't cascade a spurious "expected T, found U" on top of the
+        // resolver's `duplicate_name` diag.
+        let def_id = self
             .definitions
             .iter()
-            .find(|(_, info)| matches!(info.kind, DefKind::Function) && info.name == f.name)
-            .and_then(|(id, _)| self.def_types.get(id))
-            .and_then(|sig| match sig {
-                Ty::Function(_, ret) => Some((**ret).clone()),
-                _ => None,
-            });
+            .find(|(_, info)| {
+                matches!(info.kind, DefKind::Function) && info.name == f.name && info.span == f.span
+            })
+            .map(|(id, _)| *id);
+        let Some(def_id) = def_id else {
+            return;
+        };
+        let expected_return = self.def_types.get(&def_id).and_then(|sig| match sig {
+            Ty::Function(_, ret) => Some((**ret).clone()),
+            _ => None,
+        });
         let prev = std::mem::replace(&mut self.current_return_ty, expected_return);
         // Function bodies' "value" is irrelevant — explicit `return`
         // statements check against `current_return_ty`. We discard
@@ -1225,5 +1277,90 @@ mod tests {
         // subsequent IntLit element should widen via check_expr's
         // IntLit→Scalar(ZERO) gate, not error out.
         compile_src("function f(): Vec<3>\n  return [1.0, 2, 3.0]\nend");
+    }
+
+    // ----- Task 8 (post-/review fix loop): G1 / G2 / G3 regression tests -----
+
+    #[test]
+    fn struct_name_in_value_position_emits_diag() {
+        // G1: `synth_ident` previously returned `Ty::Error` for any DefId
+        // without a `def_types` entry, silently swallowing the cross-context
+        // mismatch (`Ty::Error` short-circuits `unify_or_diag`). The fix
+        // emits a dedicated `not_a_value` diagnostic for `DefKind::Struct`.
+        let diags = diags_for(
+            "struct Point\n  x: Scalar\n  y: Scalar\nend\nfunction f(): Int\n  return Point\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("`Point`"),
+            "msg: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("not a value"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn enum_name_in_value_position_emits_diag() {
+        // G1: same as `struct_name_in_value_position_emits_diag` for
+        // `DefKind::Enum`. (`DefKind::EnumVariant` continues to silently
+        // return `Ty::Error` — variant-as-value typing is a documented
+        // PR-3c deferral.)
+        let diags = diags_for(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Int\n  return Maybe\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("`Maybe`"),
+            "msg: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("not a value"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn vec_neg_in_int_context_emits_diag() {
+        // G2: `synth_unaryop`'s Neg arm previously returned `Ty::Error` for
+        // Vec/Mat, silently swallowing cross-context mismatches. The fix
+        // returns the input type so `unify_or_diag` produces the expected
+        // "expected Int, found Vec<3>" diagnostic.
+        let diags = diags_for("function f(v: Vec<3>): Int\n  return -v\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Int"),
+            "msg: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("Vec"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn duplicate_top_level_function_does_not_cascade_to_first_body() {
+        // G3: when two top-level items share a name, the resolver emits
+        // `duplicate_name` and re-uses the first DefId. signature_pass
+        // previously overwrote `def_types[def_id]` with the second def's
+        // signature, causing `check_function` for the FIRST body to type-
+        // check against the wrong return type and emit a spurious second
+        // diag. The first-writer-wins gate keeps the first signature so
+        // the body remains consistent with its declared signature.
+        let diags =
+            diags_for("function f(): Int\n  return 0\nend\nfunction f(): Bool\n  return true\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("already defined") || diags[0].message.contains("duplicate"),
+            "msg: {}",
+            diags[0].message
+        );
     }
 }

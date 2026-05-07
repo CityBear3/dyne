@@ -1,6 +1,7 @@
 //! Diagnostic constructors for the sema phase.
 
 use crate::diag::Diagnostic;
+use crate::sema::resolve::DefKind;
 use crate::sema::ty::Ty;
 use crate::source::Span;
 
@@ -76,6 +77,22 @@ pub fn extra_struct_field(span: Span, struct_name: &str, field: &str) -> Diagnos
         span,
         format!("struct `{struct_name}` has no field `{field}`; extra field in literal"),
     )
+}
+
+/// Type name (struct / enum) used in a value position. `synth_ident`
+/// emits this when an identifier resolves to a type-level definition
+/// rather than a runtime binding. `DefKind::EnumVariant` is intentionally
+/// omitted — variant-as-value typing is a documented PR-3c deferral.
+pub fn not_a_value(span: Span, kind: DefKind, name: &str) -> Diagnostic {
+    let kind_str = match kind {
+        DefKind::Struct => "struct type",
+        DefKind::Enum => "enum type",
+        // Defensive: callers should only pass Struct/Enum. Other kinds
+        // either have a `def_types` entry (Function/Param/Let/LoopVar/
+        // PatternBinding) or are deferred to PR-3c (EnumVariant).
+        _ => "type",
+    };
+    Diagnostic::type_error(span, format!("`{name}` is a {kind_str}, not a value"))
 }
 
 pub fn mat_shape_mismatch(

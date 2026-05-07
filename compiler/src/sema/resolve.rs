@@ -903,10 +903,13 @@ mod tests {
         let src = "let p: Point = 0";
         let prog = parse_src(src);
         let (_resolutions, _defs, diags) = resolve_program(&prog);
+        // Pin no-cascade: a single undefined type name in a single
+        // annotation must produce exactly one diagnostic.
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
         assert!(
-            diags.iter().any(|d| d.message.contains("Point")),
-            "expected undefined-name diag for Point, got {:?}",
-            diags
+            diags[0].message.contains("Point"),
+            "msg: {}",
+            diags[0].message
         );
     }
 
