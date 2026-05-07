@@ -10,15 +10,6 @@ fn samples_dir() -> PathBuf {
     p
 }
 
-/// Samples that exercise features not yet implemented in the current
-/// compiler stage. They still parse, but `compile()` runs sema and rejects
-/// them. Re-enable each entry as the corresponding PR lands.
-const SAMPLES_AWAITING_LATER_PR: &[&str] = &[
-    // Uses `Option<Measurement>` — user-defined generic enum instantiation
-    // is deferred to PR-3c.
-    "option_match.dy",
-];
-
 #[test]
 fn every_sample_parses() {
     let dir = samples_dir();
@@ -28,10 +19,6 @@ fn every_sample_parses() {
     for entry in entries {
         let path = entry.unwrap().path();
         if path.extension().and_then(|e| e.to_str()) != Some("dy") {
-            continue;
-        }
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if SAMPLES_AWAITING_LATER_PR.contains(&file_name) {
             continue;
         }
         let source =

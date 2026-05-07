@@ -143,3 +143,62 @@ fn compile_duplicate_top_level_definition_yields_diagnostic() {
     assert_eq!(diags[0].phase, dyne::diag::Phase::Sema);
     assert!(diags[0].message.contains("`x`"));
 }
+
+// ----- PR-3b Task 7: end-to-end type-checking surface -----
+//
+// These tests pin compile()'s public-API behavior under the Pass 2
+// type checker. Per-task tests in `compiler/src/sema/check.rs` already
+// exercise individual rules; the e2e tests here verify the full
+// lex → parse → resolve → signature-pass → check pipeline emits the
+// same diagnostics through `dyne::compile`.
+
+#[test]
+fn compile_int_to_int_function_succeeds() {
+    let src = "function f(x: Int): Int\n  return x + 1\nend";
+    let typed = dyne::compile(src).unwrap();
+    assert_eq!(typed.program.items.len(), 1);
+}
+
+#[test]
+fn compile_type_mismatch_in_return_yields_diagnostic() {
+    let src = "function f(): Int\n  return true\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert_eq!(diags[0].phase, dyne::diag::Phase::Sema);
+    assert!(
+        diags[0].message.contains("type mismatch"),
+        "msg: {}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn compile_wrong_arity_function_call_yields_diagnostic() {
+    let src = "function add(a: Int, b: Int): Int\n  return a + b\nend\nfunction f(): Int\n  return add(1)\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert!(
+        diags[0].message.contains("arguments"),
+        "msg: {}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn compile_struct_field_access_succeeds() {
+    let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nfunction get_x(p: Point): Scalar\n  return p.x\nend";
+    let typed = dyne::compile(src).unwrap();
+    assert_eq!(typed.program.items.len(), 2);
+}
+
+#[test]
+fn compile_unknown_struct_field_yields_diagnostic() {
+    let src = "struct Point\n  x: Scalar\n  y: Scalar\nend\nfunction get_z(p: Point): Scalar\n  return p.z\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert_eq!(diags.len(), 1, "got {:?}", diags);
+    assert!(
+        diags[0].message.contains("`z`"),
+        "msg: {}",
+        diags[0].message
+    );
+}
