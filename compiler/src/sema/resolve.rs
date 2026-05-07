@@ -155,11 +155,14 @@ fn hoist_top_level(r: &mut Resolver, prog: &Program) {
                     r.define_or_report(variant.name.clone(), DefKind::EnumVariant, variant.span);
                 }
             }
-            Item::Let(l) => {
-                // Top-level let: hoist the name. The LetStmt struct itself has
-                // no span; use the init expression's span as the binding site.
-                r.define_or_report(l.name.clone(), DefKind::TopLevelLet, l.init.span);
-            }
+            // `Item::Let` is intentionally NOT hoisted: top-level `let` has
+            // the same "RHS first, then introduce" semantics as a local
+            // `let`, mirroring Rust/OCaml. This makes `let x: Int = x + 1`
+            // a sema error (undefined `x`) rather than a runtime read of
+            // uninitialized storage. Forward references between top-level
+            // lets are correspondingly disallowed; functions remain forward-
+            // referenceable through the hoist above.
+            Item::Let(_) => {}
             Item::Import(_) => { /* PR-3a: imports are no-ops */ }
         }
     }
@@ -169,8 +172,10 @@ fn resolve_item(r: &mut Resolver, item: &Item) {
     match item {
         Item::Function(f) => resolve_function(r, f),
         Item::Let(l) => {
-            // Top-level let: only walk the RHS; the name was hoisted.
+            // Top-level let: walk RHS in the current (root) scope first,
+            // THEN introduce the binding. Mirrors local let semantics.
             resolve_expr(r, &l.init);
+            r.define_or_report(l.name.clone(), DefKind::TopLevelLet, l.init.span);
         }
         Item::Struct(_) | Item::Enum(_) | Item::Import(_) => {
             // PR-3a does not resolve type annotations or variant payloads.
@@ -530,6 +535,40 @@ mod tests {
             1,
             "rejected duplicate must not leave an orphan DefId in definitions, got {:?}",
             defs
+        );
+    }
+
+    #[test]
+    fn resolve_top_level_let_self_reference_is_undefined() {
+        // Top-level let is non-recursive: the name is not visible to its
+        // own RHS. Without this rule, codegen would have to read from
+        // uninitialized storage at runtime.
+        let src = "let x: Int = x + 1";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("undefined name `x`")),
+            "expected undefined-name diag for self-referencing top-level let, got {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn resolve_top_level_let_forward_reference_is_undefined() {
+        // Forward references between top-level lets are NOT allowed (only
+        // function/struct/enum names are hoisted). `b` has not been defined
+        // when `let a` is resolved.
+        let src = "let a: Int = b\nlet b: Int = 1";
+        let prog = parse_src(src);
+        let (_resolutions, _defs, diags) = resolve_program(&prog);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("undefined name `b`")),
+            "expected undefined-name diag for forward let reference, got {:?}",
+            diags
         );
     }
 
