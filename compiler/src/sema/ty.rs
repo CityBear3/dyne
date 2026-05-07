@@ -5,11 +5,20 @@
 //! - PR-3d: `Dimension` arithmetic (mul, div, pow), unit propagation through operators
 //! - PR-3c: enum type-argument instantiation via `TypeVarId`
 
+use std::collections::HashMap;
+
 use crate::ast::{Type, TypeArg, TypeKind};
 use crate::diag::Diagnostic;
 use crate::ids::DefId;
 use crate::sema::resolve::{DefKind, DefinitionTable, ResolveTable};
 use crate::source::Span;
+
+/// Substitution map from a parent definition's type-parameter name to its
+/// schema index. `lower_type_with_subst` returns `Ty::Param(i)` whenever a
+/// `TypeKind::Named(name)` matches a key. Used by `signature_pass` to lower
+/// variant payloads inside generic enums (and by future stdlib-generic
+/// signatures).
+pub(crate) type ParamSubst<'a> = HashMap<&'a str, usize>;
 
 /// Internal type representation. Keys into the `TypeTable` for expressions
 /// and the `def_types` / `struct_fields` / `variant_payloads` tables for
@@ -98,37 +107,73 @@ pub fn lower_type(
     definitions: &DefinitionTable,
     diags: &mut Vec<Diagnostic>,
 ) -> Ty {
+    lower_type_inner(ast_ty, resolutions, definitions, None, diags)
+}
+
+/// Lower an AST `Type` with a type-parameter substitution map. A
+/// `TypeKind::Named(name)` matching a key in `subst` returns `Ty::Param(i)`;
+/// everything else lowers identically to `lower_type`. Used by
+/// `signature_pass` to build variant signature schemas inside generic enums.
+pub(crate) fn lower_type_with_subst(
+    ast_ty: &Type,
+    resolutions: &ResolveTable,
+    definitions: &DefinitionTable,
+    subst: &ParamSubst<'_>,
+    diags: &mut Vec<Diagnostic>,
+) -> Ty {
+    lower_type_inner(ast_ty, resolutions, definitions, Some(subst), diags)
+}
+
+fn lower_type_inner(
+    ast_ty: &Type,
+    resolutions: &ResolveTable,
+    definitions: &DefinitionTable,
+    subst: Option<&ParamSubst<'_>>,
+    diags: &mut Vec<Diagnostic>,
+) -> Ty {
     match &ast_ty.kind {
-        TypeKind::Named(name) => match name.as_str() {
-            "Int" => Ty::Int,
-            "Bool" => Ty::Bool,
-            "String" => Ty::String,
-            "Scalar" => Ty::Scalar(Dimension::ZERO),
-            "Vec" | "Mat" | "Array" | "Dict" => {
-                // Without args these don't have valid Ty representations;
-                // they need at least one type/int parameter.
-                diags.push(Diagnostic::type_error(
-                    ast_ty.span,
-                    format!("`{name}` requires type arguments (e.g. `{name}<3>`)"),
-                ));
-                Ty::Error
+        TypeKind::Named(name) => {
+            // Type-parameter substitution beats every other interpretation:
+            // a name listed in the parent definition's `type_params` is a
+            // schema sentinel, not a builtin or user-defined type. In
+            // practice users won't shadow `Int`/`Bool`, but the schema
+            // model says Param wins when there's a collision.
+            if let Some(s) = subst
+                && let Some(&i) = s.get(name.as_str())
+            {
+                return Ty::Param(i);
             }
-            _ => lower_user_named(name, ast_ty, resolutions, definitions, diags),
-        },
+            match name.as_str() {
+                "Int" => Ty::Int,
+                "Bool" => Ty::Bool,
+                "String" => Ty::String,
+                "Scalar" => Ty::Scalar(Dimension::ZERO),
+                "Vec" | "Mat" | "Array" | "Dict" => {
+                    // Without args these don't have valid Ty representations;
+                    // they need at least one type/int parameter.
+                    diags.push(Diagnostic::type_error(
+                        ast_ty.span,
+                        format!("`{name}` requires type arguments (e.g. `{name}<3>`)"),
+                    ));
+                    Ty::Error
+                }
+                _ => lower_user_named(name, ast_ty, resolutions, definitions, diags),
+            }
+        }
         TypeKind::Generic(name, args) => match name.as_str() {
             "Scalar" => lower_scalar(args, ast_ty.span, diags),
             "Vec" => lower_vec(args, ast_ty.span, diags),
             "Mat" => lower_mat(args, ast_ty.span, diags),
-            "Array" => lower_array(args, ast_ty.span, resolutions, definitions, diags),
-            "Dict" => lower_dict(args, ast_ty.span, resolutions, definitions, diags),
-            _ => lower_user_generic(name, args, ast_ty, resolutions, definitions, diags),
+            "Array" => lower_array(args, ast_ty.span, resolutions, definitions, subst, diags),
+            "Dict" => lower_dict(args, ast_ty.span, resolutions, definitions, subst, diags),
+            _ => lower_user_generic(name, args, ast_ty, resolutions, definitions, subst, diags),
         },
         TypeKind::Function(args, ret) => {
             let arg_tys: Vec<Ty> = args
                 .iter()
-                .map(|a| lower_type(a, resolutions, definitions, diags))
+                .map(|a| lower_type_inner(a, resolutions, definitions, subst, diags))
                 .collect();
-            let ret_ty = lower_type(ret, resolutions, definitions, diags);
+            let ret_ty = lower_type_inner(ret, resolutions, definitions, subst, diags);
             Ty::Function(arg_tys, Box::new(ret_ty))
         }
     }
@@ -163,13 +208,16 @@ fn lower_user_named(
 /// Lower a user-defined generic enum instantiation, e.g. `Result<Int, String>`
 /// → `Ty::Enum(result_def, [Int, String])`. The arity of the type-argument list
 /// must match the enum's declared `type_params`; non-enum definitions are
-/// rejected with a focused "not a generic type" diagnostic.
+/// rejected with a focused "not a generic type" diagnostic. `subst` carries
+/// the parent enum's type-parameter mapping for nested cases like
+/// `Wrap(Result<T, String>)` inside `enum WrappedResult<T>`.
 fn lower_user_generic(
     name: &str,
     args: &[TypeArg],
     ast_ty: &Type,
     resolutions: &ResolveTable,
     definitions: &DefinitionTable,
+    subst: Option<&ParamSubst<'_>>,
     diags: &mut Vec<Diagnostic>,
 ) -> Ty {
     let Some(def_id) = resolutions.get(&ast_ty.id).copied() else {
@@ -200,7 +248,7 @@ fn lower_user_generic(
     let mut lowered_args = Vec::with_capacity(args.len());
     for arg in args {
         let ty = match arg {
-            TypeArg::Type(t) => lower_type(t, resolutions, definitions, diags),
+            TypeArg::Type(t) => lower_type_inner(t, resolutions, definitions, subst, diags),
             // Generic enums take type arguments only — int literals (Vec<3>)
             // and unit atoms (Scalar<kg>) are reserved for the built-in
             // generic-shaped types handled in their own arms above.
@@ -291,10 +339,17 @@ fn lower_array(
     span: Span,
     resolutions: &ResolveTable,
     definitions: &DefinitionTable,
+    subst: Option<&ParamSubst<'_>>,
     diags: &mut Vec<Diagnostic>,
 ) -> Ty {
     match args {
-        [TypeArg::Type(t)] => Ty::Array(Box::new(lower_type(t, resolutions, definitions, diags))),
+        [TypeArg::Type(t)] => Ty::Array(Box::new(lower_type_inner(
+            t,
+            resolutions,
+            definitions,
+            subst,
+            diags,
+        ))),
         _ => {
             diags.push(Diagnostic::type_error(
                 span,
@@ -311,12 +366,13 @@ fn lower_dict(
     span: Span,
     resolutions: &ResolveTable,
     definitions: &DefinitionTable,
+    subst: Option<&ParamSubst<'_>>,
     diags: &mut Vec<Diagnostic>,
 ) -> Ty {
     match args {
         [TypeArg::Type(k), TypeArg::Type(v)] => Ty::Dict(
-            Box::new(lower_type(k, resolutions, definitions, diags)),
-            Box::new(lower_type(v, resolutions, definitions, diags)),
+            Box::new(lower_type_inner(k, resolutions, definitions, subst, diags)),
+            Box::new(lower_type_inner(v, resolutions, definitions, subst, diags)),
         ),
         _ => {
             diags.push(Diagnostic::type_error(

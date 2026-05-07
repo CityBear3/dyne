@@ -1,6 +1,6 @@
 //! Name resolution: lexically-scoped symbol table + AST walker.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     Block, Expr, ExprKind, ForStmt, FunctionDef, IfExpr, Item, LambdaBody, LambdaExpr, MatchArm,
@@ -254,17 +254,22 @@ fn resolve_item(r: &mut Resolver, item: &Item) {
             }
         }
         Item::Enum(e) => {
-            // Generic enum payloads reference the enum's type parameters
-            // (e.g. `Ok(T)` inside `enum Result<T, E>`). Type-parameter
-            // scoping lands with PR-3c's generic instantiation; until then,
-            // skip the payload walk for generic enums to avoid spurious
-            // undefined-name diagnostics for T/E. Non-generic enums still
-            // get their concrete payload types resolved.
-            if e.type_params.is_empty() {
-                for variant in &e.variants {
-                    for payload_ty in &variant.payload {
-                        resolve_type_annotation(r, payload_ty);
-                    }
+            // Walk variant payloads for both generic and non-generic enums.
+            // For generics, the enum's `type_params` are passed through so
+            // `resolve_type_annotation` skips them at use sites — `T`/`E`
+            // are not real bindings; `lower_type_with_subst` (signature_pass)
+            // turns them into `Ty::Param(i)` later. Non-type-param refs
+            // (e.g. `String` in `Wrap(Result<T, String>)`) still get
+            // resolved normally.
+            let type_params: HashSet<&str> = e.type_params.iter().map(String::as_str).collect();
+            let type_params_arg = if type_params.is_empty() {
+                None
+            } else {
+                Some(&type_params)
+            };
+            for variant in &e.variants {
+                for payload_ty in &variant.payload {
+                    resolve_type_annotation_with_params(r, payload_ty, type_params_arg);
                 }
             }
         }
@@ -501,15 +506,31 @@ fn bind_pattern(r: &mut Resolver, p: &Pattern) {
 /// Built-in type names (`Int`/`Bool`/`String`/`Scalar`/`Vec`/`Mat`/`Array`/`Dict`)
 /// have no DefId and are skipped here; `lower_type` dispatches them by string.
 fn resolve_type_annotation(r: &mut Resolver, ty: &crate::ast::Type) {
+    resolve_type_annotation_with_params(r, ty, None);
+}
+
+/// Like `resolve_type_annotation`, but skips name resolution for any
+/// `TypeKind::Named` that matches `type_params`. Used by `resolve_item`'s
+/// `Item::Enum` arm so generic-enum variant payloads don't produce
+/// spurious "undefined name `T`" diagnostics; the payload's type-param
+/// references are sentinels populated later by `lower_type_with_subst`.
+fn resolve_type_annotation_with_params(
+    r: &mut Resolver,
+    ty: &crate::ast::Type,
+    type_params: Option<&HashSet<&str>>,
+) {
     use crate::ast::{TypeArg, TypeKind};
     match &ty.kind {
         TypeKind::Named(name) => {
+            if is_type_param_ref(name, type_params) {
+                return;
+            }
             if !is_builtin_type_name(name) {
                 resolve_name_use(r, name, ty.span, ty.id);
             }
         }
         TypeKind::Generic(name, args) => {
-            if !is_builtin_type_name(name) {
+            if !is_type_param_ref(name, type_params) && !is_builtin_type_name(name) {
                 resolve_name_use(r, name, ty.span, ty.id);
             }
             // For Scalar/Vec/Mat the trailing/all args are unit or size
@@ -522,7 +543,7 @@ fn resolve_type_annotation(r: &mut Resolver, ty: &crate::ast::Type) {
             if !unit_or_size_only {
                 for arg in args {
                     match arg {
-                        TypeArg::Type(t) => resolve_type_annotation(r, t),
+                        TypeArg::Type(t) => resolve_type_annotation_with_params(r, t, type_params),
                         TypeArg::Int(_) => {}
                         TypeArg::Unit(u) => resolve_unit_expr(r, u),
                     }
@@ -531,11 +552,15 @@ fn resolve_type_annotation(r: &mut Resolver, ty: &crate::ast::Type) {
         }
         TypeKind::Function(args, ret) => {
             for a in args {
-                resolve_type_annotation(r, a);
+                resolve_type_annotation_with_params(r, a, type_params);
             }
-            resolve_type_annotation(r, ret);
+            resolve_type_annotation_with_params(r, ret, type_params);
         }
     }
+}
+
+fn is_type_param_ref(name: &str, type_params: Option<&HashSet<&str>>) -> bool {
+    type_params.is_some_and(|s| s.contains(name))
 }
 
 fn is_builtin_type_name(name: &str) -> bool {
