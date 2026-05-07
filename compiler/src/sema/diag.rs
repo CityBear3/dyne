@@ -79,6 +79,20 @@ pub fn extra_struct_field(span: Span, struct_name: &str, field: &str) -> Diagnos
     )
 }
 
+pub fn mat_shape_mismatch(
+    span: Span,
+    expected: (usize, usize),
+    actual: (usize, usize),
+) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "matrix shape mismatch: expected {} rows × {} cols, found a row with {} cells",
+            expected.0, expected.1, actual.1
+        ),
+    )
+}
+
 /// Render a `Ty` for diagnostic messages. PR-3b uses base names; PR-3d's
 /// `Dimension::format_si` integrates here once units are implemented.
 fn format_ty(ty: &Ty) -> String {

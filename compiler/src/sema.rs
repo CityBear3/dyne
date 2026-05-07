@@ -7,6 +7,7 @@ pub mod check;
 pub mod diag;
 pub mod resolve;
 pub mod ty;
+pub mod unify;
 
 use std::collections::HashMap;
 
