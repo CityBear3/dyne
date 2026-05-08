@@ -82,7 +82,11 @@ fn stage2_struct_definition_compiles() {
 
 #[test]
 fn stage2_enum_with_generic_compiles() {
-    let src = "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend";
+    // Use names that don't shadow the built-in `Result<T, E>` and its
+    // variants `Ok`/`Err` (PR-3c Task 6 made them visible to all
+    // programs). The test exercises generic enum declaration syntax, not
+    // the specific names.
+    let src = "enum MyResult<T, E>\n  MyOk(T)\n  MyErr(E)\nend";
     let prog = dyne::compile(src).unwrap().program;
     assert_eq!(prog.items.len(), 1);
 }
@@ -200,5 +204,212 @@ fn compile_unknown_struct_field_yields_diagnostic() {
         diags[0].message.contains("`z`"),
         "msg: {}",
         diags[0].message
+    );
+}
+
+// ----- PR-3c Task 6: built-in Option<T> and Result<T, E> -----
+
+#[test]
+fn builtin_option_resolves_in_type_annotation() {
+    let result = dyne::compile("function f(): Option<Int>\n  return Some(1)\nend");
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_result_resolves_in_type_annotation() {
+    let result = dyne::compile("function f(): Result<Int, String>\n  return Ok(42)\nend");
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_some_none_visible() {
+    let result = dyne::compile(
+        "function f(): Option<Int>\n  return None\nend\nfunction g(): Option<Int>\n  return Some(1)\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_ok_err_visible() {
+    let result = dyne::compile(
+        "function f(): Result<Int, String>\n  return Ok(1)\nend\nfunction g(): Result<Int, String>\n  return Err(\"x\")\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn builtin_match_option_compiles() {
+    let result = dyne::compile(
+        "function f(o: Option<Int>): Int\n  return match o\n    case Some(x) then x\n    case None then 0\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+// ----- PR-3c Task 8: end-to-end + carry regressions -----
+
+#[test]
+fn compile_generic_enum_with_exhaustive_match() {
+    // Canonical generic-enum + match form using built-in Option<Int>.
+    let result = dyne::compile(
+        "function f(o: Option<Int>): Int\n  return match o\n    case Some(x) then x\n    case None then 0\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_generic_match_non_exhaustive_yields_diagnostic() {
+    // `Option<Int>` with only `Some` covered — Task 7 exhaustiveness
+    // surfaces the missing `None` variant as a single diag.
+    let result = dyne::compile(
+        "function f(o: Option<Int>): Int\n  return match o\n    case Some(x) then x\n  end\nend",
+    );
+    let diags = result.unwrap_err();
+    assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+    assert!(
+        diags[0].message.contains("None"),
+        "msg: {}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn compile_result_with_pattern_binding() {
+    let result = dyne::compile(
+        "function f(r: Result<Int, String>): Int\n  return match r\n    case Ok(v) then v\n    case Err(_) then -1\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_user_defined_generic_enum_e2e() {
+    // User-defined generic enum exercised end-to-end alongside the
+    // built-ins — confirms the `compile()` pipeline doesn't hard-code
+    // any specific enum names beyond the built-ins.
+    let result = dyne::compile(
+        "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Just(x) then x\n    case Nothing then 0\n  end\nend",
+    );
+    assert!(
+        result.is_ok(),
+        "expected clean compile, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_pow_diag_uses_caret_syntax() {
+    // Regression for the synth_pow text fix bundled in this task. The
+    // previous diag text referenced `**` from an early prototype; the
+    // language now consistently calls the operator `^`.
+    let diags = dyne::compile("function f(): Int\n  return true ^ 2\nend").unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message.contains("`^`")),
+        "expected `^` in diag, got: {:?}",
+        diags
+    );
+    assert!(
+        diags.iter().all(|d| !d.message.contains("`**`")),
+        "no diag should reference `**`, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn compile_canonical_builtins_produce_no_diags() {
+    // PR-3c CQ #4 defensive guard regression test. `compile()` carries
+    // a `debug_assert!` that `sema::check` over the canonical built-ins-
+    // only Program returns Ok with zero diagnostics — anything else
+    // signals a regression in `compiler/builtins/builtins.dy`. This
+    // test exercises canonical Option<T> + Result<T, E> usage through
+    // the full `compile()` pipeline; reaching `Ok(_)` here means the
+    // `debug_assert!` did not fire (i.e. built-ins remain sema-clean
+    // on the happy path) AND user-side checking still passes.
+    let src = "\
+function f(o: Option<Int>): Int
+    return match o
+        case Some(x) then x
+        case None then 0
+    end
+end
+function g(r: Result<Int, String>): Int
+    return match r
+        case Ok(v) then v
+        case Err(_) then -1
+    end
+end
+";
+    let result = dyne::compile(src);
+    assert!(
+        result.is_ok(),
+        "expected canonical built-in usage to compile without diags, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn match_inline_nested_generic_missing_inner_some_none_diag() {
+    // PR-3c CQ #1 regression: when the scrutinee is constructed inline
+    // (`Some(Some(1))`), the outer Option's type-arg is a still-unbound
+    // unification var at the time `synth_match` runs. The inner column's
+    // payload type — substituted from the variant schema — therefore
+    // resolves to `Ty::Var(_)` and exhaust falls through to its sentinel
+    // skip arm, silently accepting the missing inner `None` arm.
+    //
+    // Fix: `synth_match` must deep-resolve the scrutinee through the
+    // unification table before handing it to `check_exhaustive`, so the
+    // inner column carries `Option<Int>` rather than `Option<Var(α)>`.
+    let src = "function f(): Int\n  return match Some(Some(1))\n    case Some(Some(x)) then x\n    case None then 0\n  end\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("non-exhaustive") && d.message.contains("None")),
+        "expected non-exhaustive diag mentioning missing inner `None`, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn compile_user_redeclares_builtin_option_yields_diag() {
+    // Negative interaction with built-ins: user declares an `enum
+    // Option<T>` that collides with the built-in. Resolver fires
+    // `duplicate_name` against the built-in's pre-existing entry.
+    // Validates that built-ins are visible to the resolver's hoist
+    // (otherwise no collision would surface) AND that the user gets a
+    // meaningful diag rather than a silent override.
+    let diags = dyne::compile("enum Option<T>\n  MyVariant(T)\nend").unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("`Option`") && d.message.contains("already defined")),
+        "expected duplicate-name diag for Option, got: {:?}",
+        diags
     );
 }

@@ -54,6 +54,17 @@ pub fn wrong_arity(span: Span, expected: usize, actual: usize) -> Diagnostic {
     )
 }
 
+/// Generic-type instantiation arity mismatch, e.g. `Result<Int>` when the
+/// declaration is `enum Result<T, E>`. Used by `lower_type` to point at the
+/// annotation site rather than letting the mismatch cascade through later
+/// passes as a vague "type error".
+pub fn wrong_type_arity(span: Span, name: &str, expected: usize, actual: usize) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("`{name}` expects {expected} type argument(s), but {actual} were provided"),
+    )
+}
+
 pub fn not_callable(span: Span, ty: &Ty) -> Diagnostic {
     Diagnostic::type_error(span, format!("type `{}` is not callable", format_ty(ty)))
 }
@@ -95,16 +106,82 @@ pub fn not_a_value(span: Span, kind: DefKind, name: &str) -> Diagnostic {
     Diagnostic::type_error(span, format!("`{name}` is a {kind_str}, not a value"))
 }
 
-pub fn mat_shape_mismatch(
-    span: Span,
-    expected: (usize, usize),
-    actual: (usize, usize),
-) -> Diagnostic {
+/// `expected` is the declared `(rows, cols)`; `actual_cols` is the
+/// length of the offending row. The previous signature passed the row
+/// count alongside the column count for the actual shape, but every
+/// call site computed the row count as `rows.len()` (the same value
+/// `expected.0` carried), so the diag never read it. Simplified to
+/// take only the column count of the row that triggered the error.
+pub fn mat_shape_mismatch(span: Span, expected: (usize, usize), actual_cols: usize) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(
             "matrix shape mismatch: expected {} rows × {} cols, found a row with {} cells",
-            expected.0, expected.1, actual.1
+            expected.0, expected.1, actual_cols
+        ),
+    )
+}
+
+/// Match-pattern fired against a scrutinee whose type is not an enum.
+/// `expected_kind` is the pattern's expected category (e.g. "enum") so the
+/// message reads naturally — the scrutinee's type comes from `actual`.
+pub fn pattern_type_mismatch(span: Span, actual: &Ty, expected_kind: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "pattern matches {expected_kind} but scrutinee is `{}`",
+            format_ty(actual)
+        ),
+    )
+}
+
+/// Variant pattern referencing a variant that doesn't belong to the
+/// scrutinee's enum. e.g. `case Some(x)` against a `Result<_, _>`
+/// scrutinee — `Some` is from `Maybe`, not `Result`.
+pub fn wrong_variant_for_enum(span: Span, variant_name: &str, scrut_ty: &Ty) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "variant `{variant_name}` does not belong to scrutinee type `{}`",
+            format_ty(scrut_ty)
+        ),
+    )
+}
+
+/// Match expression doesn't cover every variant of its enum scrutinee.
+/// `missing_variants` lists the variant names (in declaration order)
+/// that have no covering arm.
+pub fn non_exhaustive_enum(span: Span, missing_variants: &[&str]) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "non-exhaustive match: missing variant(s) {}",
+            missing_variants.join(", ")
+        ),
+    )
+}
+
+/// Match expression on `Bool` doesn't cover both `true` and `false`
+/// (and has no catch-all).
+pub fn non_exhaustive_bool(span: Span, missing: &[&str]) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "non-exhaustive match on Bool: missing {}",
+            missing.join(", ")
+        ),
+    )
+}
+
+/// Match expression on a scrutinee whose type doesn't have a finite
+/// canonical pattern set (Int, Scalar, String, Vec, Mat, Array, Dict)
+/// — exhaustiveness can only be guaranteed by an explicit catch-all
+/// pattern (`_` or an Ident binding).
+pub fn requires_wildcard(span: Span, kind: &str) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "non-exhaustive match on `{kind}`: a wildcard pattern (`_` or binding) is required"
         ),
     )
 }
@@ -128,6 +205,12 @@ fn format_ty(ty: &Ty) -> String {
         Ty::Struct(_) => "<struct>".into(),
         Ty::Enum(_, _) => "<enum>".into(),
         Ty::Var(_) => "?".into(),
+        // Param should never reach diagnostic rendering — `synth_ident`
+        // substitutes Param → fresh Var before the type can leak into a
+        // diagnostic. The arm exists to keep `format_ty` exhaustive, and
+        // the message names the schema position so a regression that lets
+        // Param escape produces something readable rather than a panic.
+        Ty::Param(i) => format!("<param #{i}>"),
         Ty::Error => "<error>".into(),
     }
 }

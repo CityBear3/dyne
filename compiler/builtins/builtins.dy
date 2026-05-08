@@ -1,0 +1,22 @@
+// Built-in types provided by the dyne compiler.
+//
+// Loaded via include_str! in compile() before user source so user code
+// can refer to Option<T> and Result<T, E> without an explicit declaration.
+// Per /design-discussion 2026-05-08 (Q4 / Path 2), the hybrid approach
+// of declaring built-ins in dyne syntax keeps the compiler self-host
+// friendly: the same parser / resolver / type checker machinery handles
+// both built-in and user code.
+//
+// A failure to compile this file is a compile-time bug in dyne itself
+// (sema::builtins::load_builtins panics rather than surfacing the
+// diagnostics to user code).
+
+enum Option<T>
+  Some(T)
+  None
+end
+
+enum Result<T, E>
+  Ok(T)
+  Err(E)
+end

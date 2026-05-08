@@ -25,7 +25,7 @@ use crate::ast::{
 };
 use crate::diag::Diagnostic;
 use crate::ids::{DefId, NodeId};
-use crate::sema::resolve::{DefKind, DefinitionTable, ResolveTable};
+use crate::sema::resolve::{BindingTable, DefKind, DefinitionTable, ResolveTable};
 use crate::sema::ty::{Dimension, Ty, VariantPayload, lower_type};
 use crate::sema::unify;
 use crate::source::Span;
@@ -33,6 +33,7 @@ use crate::source::Span;
 pub(crate) struct TypeChecker<'a> {
     resolutions: &'a ResolveTable,
     definitions: &'a DefinitionTable,
+    binding_def_ids: &'a BindingTable,
     pub(crate) def_types: &'a mut HashMap<DefId, Ty>,
     pub(crate) struct_fields: &'a HashMap<DefId, Vec<(String, Ty)>>,
     pub(crate) variant_payloads: &'a HashMap<DefId, VariantPayload>,
@@ -52,6 +53,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn new(
         resolutions: &'a ResolveTable,
         definitions: &'a DefinitionTable,
+        binding_def_ids: &'a BindingTable,
         def_types: &'a mut HashMap<DefId, Ty>,
         struct_fields: &'a HashMap<DefId, Vec<(String, Ty)>>,
         variant_payloads: &'a HashMap<DefId, VariantPayload>,
@@ -59,6 +61,7 @@ impl<'a> TypeChecker<'a> {
         Self {
             resolutions,
             definitions,
+            binding_def_ids,
             def_types,
             struct_fields,
             variant_payloads,
@@ -107,15 +110,77 @@ impl<'a> TypeChecker<'a> {
         // Implicit Int → dimensionless Scalar conversion (DD line 143). Only
         // applies in checking mode and only when the expected dimension is
         // `ZERO`. Synthesis never widens an Int.
-        if let (ExprKind::IntLit(_), Ty::Scalar(d)) = (&e.kind, expected)
+        //
+        // Resolve `expected` through the unification table first so a `Var`
+        // that's been bound to `Scalar(0)` by an outer bidirectional Call
+        // flow (see `check_call` below) is seen as its concrete shape here.
+        // Without this, `Mk(1)` against `Box<Scalar>` wouldn't widen at the
+        // arg position because the per-arg `expected` is `Var(α)`, not
+        // `Scalar(0)`.
+        let resolved_expected = self.unify_table.resolve(expected);
+        if let (ExprKind::IntLit(_), Ty::Scalar(d)) = (&e.kind, &resolved_expected)
             && d.is_dimensionless()
         {
             let ty = Ty::Scalar(Dimension::ZERO);
             return self.record(e.id, ty);
         }
+        // Bidirectional Call: route `Call` exprs through `check_call` so
+        // outer `expected` unifies with the callee's return type BEFORE
+        // per-arg checking. This propagates outer constraints into
+        // type-Vars introduced by `instantiate_variant_schema`, enabling
+        // arg-position widening (e.g. `Mk(1): Box<Scalar>` → α=Scalar
+        // first, then the per-arg IntLit-gate fires).
+        if let ExprKind::Call(callee, args) = &e.kind {
+            return self.check_call(e, callee, args, expected);
+        }
         let synthesized = self.synth_expr(e);
         self.unify_or_diag(&synthesized, expected, e.span);
         synthesized
+    }
+
+    /// Bidirectional check for `Call` expressions. Mirrors `synth_call`'s
+    /// arity / arg-type / not-callable diagnostics, but pre-unifies the
+    /// callee's return type with the outer `expected` so type-Vars in the
+    /// signature pick up outer constraints before per-arg checking.
+    fn check_call(&mut self, e: &Expr, callee: &Expr, args: &[Expr], expected: &Ty) -> Ty {
+        let callee_ty = self.synth_expr(callee);
+        let resolved = self.unify_table.resolve(&callee_ty);
+        let result = match resolved {
+            Ty::Error => Ty::Error,
+            Ty::Function(param_tys, ret_ty) => {
+                // Step 1: silently bind `ret_ty` against the outer
+                // expected. Final `unify_or_diag` below catches any
+                // mismatch that survives — Err here would be redundant.
+                let _ = self.unify_table.unify(&ret_ty, expected);
+                if param_tys.len() != args.len() {
+                    self.diagnostics.push(crate::sema::diag::wrong_arity(
+                        e.span,
+                        param_tys.len(),
+                        args.len(),
+                    ));
+                    // Suppress cascade — wrong_arity already pinned the
+                    // structural error; the outer `unify_or_diag` would
+                    // otherwise pile a "type mismatch" on top.
+                    Ty::Error
+                } else {
+                    for (arg, p_ty) in args.iter().zip(param_tys.iter()) {
+                        self.check_expr(arg, p_ty);
+                    }
+                    *ret_ty
+                }
+            }
+            other => {
+                self.diagnostics
+                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                Ty::Error
+            }
+        };
+        // Final unify catches surviving mismatches (e.g. wrong arg type
+        // didn't bind a Var the outer expected required). `Ty::Error`
+        // unifies with anything so the no-cascade arity / not-callable
+        // paths don't fire a second diag.
+        self.unify_or_diag(&result, expected, e.span);
+        self.record(e.id, result)
     }
 
     fn synth_ident(&mut self, e: &Expr) -> Ty {
@@ -123,13 +188,21 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error; // resolver already reported
         };
         if let Some(ty) = self.def_types.get(&def_id).cloned() {
+            // Enum-variant schemas may carry `Ty::Param(i)` sentinels from
+            // signature_pass. Instantiate with fresh `Ty::Var`s per use
+            // site so two references to the same variant get independent
+            // inference variables — `Just(1)` and `Just("x")` in different
+            // contexts must not share a single Var (which would conflict).
+            if self.is_variant_def(def_id) {
+                return self.instantiate_variant_schema(def_id, &ty);
+            }
             return ty;
         }
-        // Definition exists but no `def_types` entry: distinguish a
-        // type-level definition used as a value (Struct / Enum, fixable
-        // diagnostic) from PR-3c-deferred shapes (EnumVariant), which
-        // continue to silently return `Ty::Error` to preserve the
-        // no-cascade invariant until variant-constructor typing lands.
+        // Definition exists but no `def_types` entry: type-level definition
+        // (Struct / Enum) used as a value gets a focused diagnostic. Other
+        // kinds (e.g. orphan EnumVariant — shouldn't happen post-Task-3)
+        // fall through to silent Ty::Error so the no-cascade invariant
+        // holds.
         if let Some(info) = self.definitions.get(&def_id) {
             match info.kind {
                 DefKind::Struct | DefKind::Enum => {
@@ -138,13 +211,39 @@ impl<'a> TypeChecker<'a> {
                     self.diagnostics
                         .push(crate::sema::diag::not_a_value(e.span, kind, &name));
                 }
-                // EnumVariant: PR-3c will populate `def_types` with
-                // `Ty::Function(payload, Ty::Enum(parent, ...))`. Until
-                // then, silent `Ty::Error` keeps the no-cascade invariant.
                 _ => {}
             }
         }
         Ty::Error
+    }
+
+    /// True if `def_id` is an enum variant. Used by `synth_ident` to gate
+    /// schema instantiation.
+    fn is_variant_def(&self, def_id: DefId) -> bool {
+        self.definitions
+            .get(&def_id)
+            .is_some_and(|info| matches!(info.kind, DefKind::EnumVariant))
+    }
+
+    /// Walk the variant's parent enum to count its type-parameter arity,
+    /// allocate that many fresh `Ty::Var`s, then substitute every
+    /// `Ty::Param(i)` in the schema with the corresponding fresh Var.
+    /// Non-generic variants (parent type_params is empty) short-circuit
+    /// to the schema unchanged — no allocation, no walk.
+    fn instantiate_variant_schema(&mut self, variant_def_id: DefId, schema: &Ty) -> Ty {
+        let n_params = self
+            .variant_payloads
+            .get(&variant_def_id)
+            .and_then(|vp| self.definitions.get(&vp.parent_enum))
+            .map(|info| info.type_params.len())
+            .unwrap_or(0);
+        if n_params == 0 {
+            return schema.clone();
+        }
+        let type_args: Vec<Ty> = (0..n_params)
+            .map(|_| Ty::Var(self.unify_table.fresh()))
+            .collect();
+        schema.subst_with_args(&type_args)
     }
 
     fn synth_binop(&mut self, op: BinOp, l: &Expr, r: &Expr) -> Ty {
@@ -380,11 +479,11 @@ impl<'a> TypeChecker<'a> {
         };
         if !matches!(r, Ty::Int) {
             self.diagnostics
-                .push(crate::sema::diag::op_type_error(r_span, "`**` exponent", r));
+                .push(crate::sema::diag::op_type_error(r_span, "`^` exponent", r));
         }
         if matches!(result, Ty::Error) {
             self.diagnostics
-                .push(crate::sema::diag::op_type_error(l_span, "`**` base", l));
+                .push(crate::sema::diag::op_type_error(l_span, "`^` base", l));
         }
         result
     }
@@ -428,37 +527,31 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn unify_or_diag(&mut self, actual: &Ty, expected: &Ty, span: Span) {
-        // Resolve through the unification table first so any `Ty::Var`
-        // chains collapse to concrete types before we compare. PR-3b only
-        // produces concrete types (resolve is a no-op for those); the
-        // plumbing is in place for PR-3c's constructor inference.
-        let actual = self.unify_table.resolve(actual);
-        let expected = self.unify_table.resolve(expected);
-        if matches!(actual, Ty::Error) || matches!(expected, Ty::Error) {
-            return;
-        }
-        if actual != expected {
+        // Run structural unification — this both compares and BINDS Vars.
+        // PR-3b's resolve+compare worked because all types were concrete;
+        // PR-3c's variant instantiation introduces Vars whose binding has
+        // to flow through the unification table. `unify_table.unify`
+        // returns Err on outermost mismatch (with already-resolved Tys);
+        // Err's two Tys are then formatted into the user-facing diagnostic.
+        // `Ty::Error` unifies with anything, so cascade suppression works.
+        if let Err((actual_resolved, expected_resolved)) = self.unify_table.unify(actual, expected)
+        {
             self.diagnostics.push(crate::sema::diag::type_mismatch_full(
-                span, &expected, &actual,
+                span,
+                &expected_resolved,
+                &actual_resolved,
             ));
         }
     }
 
     fn check_function(&mut self, f: &FunctionDef) {
-        // Pin the lookup to (kind, name, span). For a *duplicate* top-level
-        // function, the resolver only registered the FIRST definition under
-        // this name, so the second's span won't match any entry in
-        // `definitions`. Skip the body walk entirely in that case so we
-        // don't cascade a spurious "expected T, found U" on top of the
-        // resolver's `duplicate_name` diag.
-        let def_id = self
-            .definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::Function) && info.name == f.name && info.span == f.span
-            })
-            .map(|(id, _)| *id);
-        let Some(def_id) = def_id else {
+        // Look up the function's DefId via its AST NodeId. For a *duplicate*
+        // top-level function, the resolver's `define_or_report` returns
+        // `None` and never inserts into `binding_def_ids`, so this lookup
+        // also returns `None` for the duplicate's `f.id` — skipping the
+        // body walk so we don't cascade a spurious "expected T, found U"
+        // on top of the resolver's `duplicate_name` diag.
+        let Some(def_id) = self.binding_def_ids.get(&f.id).copied() else {
             return;
         };
         let expected_return = self.def_types.get(&def_id).and_then(|sig| match sig {
@@ -490,11 +583,12 @@ impl<'a> TypeChecker<'a> {
     fn synth_stmt(&mut self, s: &Stmt) -> Ty {
         match &s.kind {
             StmtKind::Let(l) => {
-                // Recover the local let's DefId via (DefKind::LocalLet, name,
-                // span). Pass 1 (signature_pass) only handled top-level lets,
-                // so the entry may not yet be in def_types; insert it now
-                // using the lowered annotation.
-                if let Some(def_id) = self.local_let_def_id(&l.name, s.span) {
+                // Recover the local let's DefId via the wrapping `Stmt`'s
+                // NodeId (which `define_or_report` keyed the binding entry
+                // under). Pass 1 (signature_pass) only handled top-level
+                // lets, so the entry may not yet be in def_types; insert it
+                // now using the lowered annotation.
+                if let Some(def_id) = self.binding_def_ids.get(&s.id).copied() {
                     if !self.def_types.contains_key(&def_id) {
                         let lowered = lower_type(
                             &l.ty,
@@ -541,31 +635,17 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn local_let_def_id(&self, name: &str, span: Span) -> Option<DefId> {
-        self.definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::LocalLet) && info.name == name && info.span == span
-            })
-            .map(|(id, _)| *id)
-    }
-
+    /// Recover a loop-variable's DefId by `(DefKind::LoopVar, name, span)`.
+    /// Loop vars are the lone holdout from `binding_def_ids`: `ForStmt`'s
+    /// AST has no per-binding NodeId, so the resolver passes `None` to
+    /// `define_or_report` and this linear scan stands in. TODO: when
+    /// `ForStmt` grows per-binding NodeIds, replace with a
+    /// `binding_def_ids.get(&node_id).copied()` lookup.
     fn loop_var_def_id(&self, name: &str, span: Span) -> Option<DefId> {
         self.definitions
             .iter()
             .find(|(_, info)| {
                 matches!(info.kind, DefKind::LoopVar) && info.name == name && info.span == span
-            })
-            .map(|(id, _)| *id)
-    }
-
-    fn pattern_binding_def_id(&self, name: &str, span: Span) -> Option<DefId> {
-        self.definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::PatternBinding)
-                    && info.name == name
-                    && info.span == span
             })
             .map(|(id, _)| *id)
     }
@@ -623,6 +703,32 @@ impl<'a> TypeChecker<'a> {
                 had_arm_mismatch = true;
             }
         }
+        // Exhaustiveness check (Task 7). Resolve the scrutinee type
+        // through the unification table first so any Vars bound by
+        // arm-pattern flow are seen as their concrete instantiation —
+        // a `Maybe<Var(α)>` becomes `Maybe<Int>` once an arm pattern's
+        // payload binds α=Int, and exhaustiveness can then substitute
+        // payload params correctly.
+        //
+        // `resolve_deep` (rather than plain `resolve`) is required for
+        // inline-constructed scrutinees like `match Some(Some(1)) ...`:
+        // the outer Option's type-arg is a still-unbound Var at the
+        // top level, but the inner Var has been bound to `Int` by the
+        // inner constructor's argument unification. Without the deep
+        // walk, the inner column's substituted payload type would be
+        // `Var(α)` and exhaust would fall into its sentinel skip arm,
+        // silently accepting a non-exhaustive nested pattern set.
+        let resolved_scrut = self.unify_table.resolve_deep(&scrut_ty);
+        let exhaust_diags = crate::sema::exhaust::check_exhaustive(
+            &resolved_scrut,
+            arms,
+            scrutinee.span,
+            self.resolutions,
+            self.definitions,
+            self.variant_payloads,
+        );
+        self.diagnostics.extend(exhaust_diags);
+
         // No-cascade: same shape as synth_if. If any arm-vs-seed
         // mismatch already pushed a diag, return Ty::Error so the
         // outer check_expr doesn't fire a second one.
@@ -640,41 +746,66 @@ impl<'a> TypeChecker<'a> {
             PatternKind::IntLit(_) => self.unify_or_diag(&Ty::Int, expected, p.span),
             PatternKind::BoolLit(_) => self.unify_or_diag(&Ty::Bool, expected, p.span),
             PatternKind::StrLit(_) => self.unify_or_diag(&Ty::String, expected, p.span),
-            PatternKind::Ident(name) => {
-                // The resolver creates a DefKind::PatternBinding for this
-                // name (under the pattern's own span). Look it up by
-                // (kind, name, span) and record its type as the scrutinee's.
-                // Resolutions[p.id] is *not* populated for pattern bindings —
-                // that table maps name *uses*, while pattern bindings are
-                // introductions.
-                if let Some(def_id) = self.pattern_binding_def_id(name, p.span) {
+            PatternKind::Ident(_name) => {
+                // Pattern bindings are introductions (not uses), so they're
+                // recorded in `binding_def_ids` keyed by the pattern's own
+                // NodeId rather than in `resolutions`. Recover the DefId in
+                // O(1) and record its type as the scrutinee's.
+                if let Some(def_id) = self.binding_def_ids.get(&p.id).copied() {
                     self.def_types.insert(def_id, expected.clone());
                 }
             }
-            PatternKind::Variant(_, sub_patterns) => {
+            PatternKind::Variant(name, sub_patterns) => {
                 let Some(variant_def_id) = self.resolutions.get(&p.id).copied() else {
+                    return; // resolver already reported
+                };
+                let Some(variant_info) = self.variant_payloads.get(&variant_def_id).cloned() else {
                     return;
                 };
-                let Some(payload) = self.variant_payloads.get(&variant_def_id).cloned() else {
-                    return;
+                // Resolve the expected (scrutinee) type — it may carry Vars
+                // bound by the outer match's bidirectional flow. We need a
+                // concrete `Ty::Enum(parent, type_args)` to validate the
+                // variant and substitute its payload.
+                let resolved_expected = self.unify_table.resolve(expected);
+                let (parent, type_args) = match &resolved_expected {
+                    Ty::Enum(parent, args) => (*parent, args.clone()),
+                    Ty::Error => return, // no-cascade
+                    other => {
+                        // Pattern fired against a scrutinee whose type isn't
+                        // an enum — e.g. `match 1 { case Some(x) => ... }`.
+                        self.diagnostics
+                            .push(crate::sema::diag::pattern_type_mismatch(
+                                p.span, other, "enum",
+                            ));
+                        return;
+                    }
                 };
-                let parent_matches = matches!(
-                    expected,
-                    Ty::Enum(scrut_def_id, _) if *scrut_def_id == payload.parent_enum
-                );
-                if !parent_matches && !matches!(expected, Ty::Error) {
-                    self.unify_or_diag(&Ty::Enum(payload.parent_enum, vec![]), expected, p.span);
+                if variant_info.parent_enum != parent {
+                    self.diagnostics
+                        .push(crate::sema::diag::wrong_variant_for_enum(
+                            p.span,
+                            name,
+                            &resolved_expected,
+                        ));
                     return;
                 }
-                if sub_patterns.len() != payload.payload.len() {
+                // Substitute Param(i) → type_args[i] in the payload schema.
+                // For non-generic enums type_args is empty and substitution
+                // is identity (no Param positions in the payload).
+                let substituted: Vec<Ty> = variant_info
+                    .payload
+                    .iter()
+                    .map(|t| t.subst_with_args(&type_args))
+                    .collect();
+                if sub_patterns.len() != substituted.len() {
                     self.diagnostics.push(crate::sema::diag::wrong_arity(
                         p.span,
-                        payload.payload.len(),
+                        substituted.len(),
                         sub_patterns.len(),
                     ));
                     return;
                 }
-                for (sub, sub_ty) in sub_patterns.iter().zip(payload.payload.iter()) {
+                for (sub, sub_ty) in sub_patterns.iter().zip(substituted.iter()) {
                     self.check_pattern(sub, sub_ty);
                 }
             }
@@ -785,7 +916,7 @@ impl<'a> TypeChecker<'a> {
                 self.diagnostics.push(crate::sema::diag::mat_shape_mismatch(
                     e.span,
                     (rows.len(), cols),
-                    (rows.len(), row.len()),
+                    row.len(),
                 ));
                 // Bail on shape mismatch to keep the no-cascade invariant.
                 return Ty::Error;
@@ -843,6 +974,7 @@ pub(crate) fn run(
     program: &Program,
     resolutions: &ResolveTable,
     definitions: &DefinitionTable,
+    binding_def_ids: &BindingTable,
     def_types: &mut HashMap<DefId, Ty>,
     struct_fields: &HashMap<DefId, Vec<(String, Ty)>>,
     variant_payloads: &HashMap<DefId, VariantPayload>,
@@ -850,6 +982,7 @@ pub(crate) fn run(
     let mut tc = TypeChecker::new(
         resolutions,
         definitions,
+        binding_def_ids,
         def_types,
         struct_fields,
         variant_payloads,
@@ -1394,6 +1527,339 @@ mod tests {
         assert_eq!(diags.len(), 1, "diags: {:?}", diags);
         assert!(
             diags[0].message.contains("already defined") || diags[0].message.contains("duplicate"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    // ----- PR-3c Task 4: variant constructor instantiation -----
+
+    #[test]
+    fn variant_call_non_generic_typechecks() {
+        // Closes PR-3b's silent gap. `Just(1)` is now type-checked: the
+        // variant's schema `Function([Int], Enum(maybe, []))` is retrieved
+        // by synth_ident, then synth_call checks the arg against `Int`.
+        compile_src(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Maybe\n  return Just(1)\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_non_generic_wrong_arg_diag() {
+        let diags = diags_for(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Maybe\n  return Just(\"oops\")\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Int") && diags[0].message.contains("String"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn variant_call_non_generic_wrong_arity_diag() {
+        let diags = diags_for(
+            "enum Maybe\n  Just(Int)\n  Nothing\nend\nfunction f(): Maybe\n  return Just(1, 2)\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("expected 1") && diags[0].message.contains("found 2"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn variant_call_generic_inferred_int() {
+        // `Just(1)` against expected `Maybe<Int>`: synth_ident allocates a
+        // fresh Var for T, returns `Function([Var(α)], Enum(maybe, [Var(α)]))`;
+        // synth_call binds α=Int via the arg check; the function's expected
+        // return `Maybe<Int>` unifies cleanly.
+        compile_src(
+            "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction f(): Maybe<Int>\n  return Just(1)\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_generic_inferred_string_independent() {
+        // Two `Just` calls in different functions get independent fresh
+        // Vars: one binds T=Int, the other T=String. Without per-use-site
+        // instantiation they would share a single Var and conflict.
+        compile_src(
+            "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction ints(): Maybe<Int>\n  return Just(1)\nend\nfunction strs(): Maybe<String>\n  return Just(\"hi\")\nend",
+        );
+    }
+
+    #[test]
+    fn variant_nullary_value_in_context() {
+        // `Nothing` used as value: synth_ident retrieves the bare schema
+        // `Enum(maybe, [Param(0)])`, instantiates Param→Var, returns
+        // `Enum(maybe, [Var(α)])`. unify_or_diag against expected
+        // `Maybe<Int>` binds α=Int.
+        compile_src(
+            "enum Maybe<T>\n  Just(T)\n  Nothing\nend\nfunction f(): Maybe<Int>\n  return Nothing\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_two_param_enum_inferred() {
+        compile_src(
+            "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(): Result<Int, String>\n  return Ok(42)\nend\nfunction g(): Result<Int, String>\n  return Err(\"boom\")\nend",
+        );
+    }
+
+    #[test]
+    fn variant_call_generic_arg_int_to_scalar_widening() {
+        // The `Int → Scalar(ZERO)` implicit-conversion gate should fire at
+        // a variant-constructor arg boundary because synth_call routes
+        // each arg through `check_expr` (which holds the gate).
+        compile_src("enum Box<T>\n  Mk(T)\nend\nfunction f(): Box<Scalar>\n  return Mk(1)\nend");
+    }
+
+    // ----- PR-3c Task 5: generic match-pattern substitution + binding -----
+
+    #[test]
+    fn match_generic_binds_payload_type() {
+        // `case Some(x) then x` against scrutinee `Maybe<Int>` must bind
+        // `x: Int` (substituting Param(0) with the scrutinee's type-arg).
+        // Without substitution `x` would be `Param(0)` and the body's
+        // `return x` against `Int` would mismatch.
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x) then x\n    case Nothing then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_generic_payload_type_mismatch() {
+        // Body returns `x: Int` but function declares `String` — exactly
+        // one diagnostic for the arm-vs-seed mismatch.
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): String\n  return match m\n    case Some(x) then x\n    case Nothing then \"none\"\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn match_two_param_enum_binding() {
+        // `case Ok(value)` binds value: Int; `case Err(_)` discards
+        // String — sub-pattern wildcard is fine.
+        compile_src(
+            "enum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(r: Result<Int, String>): Int\n  return match r\n    case Ok(value) then value\n    case Err(_) then -1\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_wrong_variant_for_enum_diag() {
+        // Pattern `Some` (from Maybe) on a `Result` scrutinee — the
+        // variant doesn't belong to the scrutinee's enum.
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nenum Result<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(r: Result<Int, String>): Int\n  return match r\n    case Some(x) then 0\n    case Ok(v) then v\n    case Err(_) then -1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Some") || diags[0].message.contains("Maybe"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_pattern_arity_mismatch_diag() {
+        // `case Some(x, y)` vs payload arity 1 — too many sub-patterns.
+        // (Parser rejects `case Some()` for empty parens, and `case Some`
+        // without parens parses as an Ident binding, not a nullary pattern,
+        // so over-arity is the only direction expressible here.)
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x, y) then 0\n    case Nothing then -1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("expected 1") && diags[0].message.contains("found 2"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_nested_variant_pattern() {
+        // `case Some(Some(x)) then x` — 2-level nested binding. The outer
+        // substitution gives the inner pattern `Maybe<Int>`, then the
+        // inner substitution binds x: Int.
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Maybe<Int>>): Int\n  return match m\n    case Some(Some(x)) then x\n    case Some(Nothing) then 0\n    case Nothing then -1\n  end\nend",
+        );
+    }
+
+    // ----- PR-3c Task 7: match exhaustiveness -----
+
+    #[test]
+    fn match_enum_missing_variant_diag() {
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x) then x\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Nothing") || diags[0].message.contains("missing"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_enum_with_wildcard_passes() {
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(m: Maybe<Int>): Int\n  return match m\n    case Some(x) then x\n    case _ then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_bool_missing_false_diag() {
+        let diags = diags_for(
+            "function f(b: Bool): Int\n  return match b\n    case true then 1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("false") || diags[0].message.contains("Bool"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_int_requires_wildcard_diag() {
+        let diags =
+            diags_for("function f(i: Int): Int\n  return match i\n    case 0 then 0\n  end\nend");
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("wildcard"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_int_with_wildcard_passes() {
+        compile_src(
+            "function f(i: Int): Int\n  return match i\n    case 0 then 0\n    case _ then 1\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_struct_with_ident_passes() {
+        compile_src(
+            "struct P\n  x: Int\n  y: Int\nend\nfunction f(p: P): Int\n  return match p\n    case s then s.x\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_function_value_not_matchable_diag() {
+        let diags = diags_for(
+            "function g(): Int\n  return 0\nend\nfunction f(): Int\n  return match g\n    case _ then 0\n  end\nend",
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("function") && d.message.contains("not allowed")),
+            "diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn match_array_passes_with_wildcard() {
+        compile_src(
+            "function f(xs: Array<Int>): Int\n  return match xs\n    case _ then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_dict_passes_with_ident() {
+        compile_src(
+            "function f(d: Dict<Int, String>): Int\n  return match d\n    case s then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_two_param_enum_missing_variant_diag() {
+        // Use a user-defined `MyResult` since the in-crate test helpers
+        // bypass `compile()`'s built-ins loading. Behavior equivalence:
+        // built-in Result is just an enum with the same shape.
+        let diags = diags_for(
+            "enum MyResult<T, E>\n  Ok(T)\n  Err(E)\nend\nfunction f(r: MyResult<Int, String>): Int\n  return match r\n    case Ok(v) then v\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Err"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_nested_payload_missing_inner_variant_diag() {
+        // User-defined `Maybe<T>` (same shape as built-in Option). Outer
+        // Some/Nothing covered; inner Maybe's `Nothing` is missing at
+        // the `Some(...)` column.
+        let diags = diags_for(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(oo: Maybe<Maybe<Int>>): Int\n  return match oo\n    case Some(Some(x)) then x\n    case Nothing then -1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("Nothing") || diags[0].message.contains("missing"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_nested_payload_complete_passes() {
+        compile_src(
+            "enum Maybe<T>\n  Some(T)\n  Nothing\nend\nfunction f(oo: Maybe<Maybe<Int>>): Int\n  return match oo\n    case Some(Some(x)) then x\n    case Some(Nothing) then 0\n    case Nothing then -1\n  end\nend",
+        );
+    }
+
+    // Exhaustiveness coverage gaps surfaced by code-quality review:
+    // pin String require_catchall behavior + the no-cascade skip path
+    // for scrutinees whose type is `Ty::Error` (an upstream diag was
+    // already pinned and exhaust must not pile on). Scalar's
+    // require_catchall path is structurally identical to Int's
+    // (`match_int_requires_wildcard_diag`); a dedicated Scalar test
+    // can't be written because float-literal patterns are rejected
+    // at parse phase before exhaust runs.
+
+    #[test]
+    fn match_string_requires_wildcard_diag() {
+        let diags = diags_for(
+            "function f(s: String): Int\n  return match s\n    case \"hi\" then 1\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("wildcard"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn match_string_with_wildcard_passes() {
+        compile_src(
+            "function f(s: String): Int\n  return match s\n    case \"hi\" then 1\n    case _ then 0\n  end\nend",
+        );
+    }
+
+    #[test]
+    fn match_error_scrutinee_skips_exhaustiveness() {
+        // The scrutinee references an undefined name → its synthesized
+        // type is `Ty::Error`. exhaust must skip (no-cascade) so the
+        // single "undefined name" diag isn't joined by a spurious
+        // "non-exhaustive" diag.
+        let diags = diags_for(
+            "function f(): Int\n  return match undefined_var\n    case _ then 0\n  end\nend",
+        );
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("undefined_var"),
             "msg: {}",
             diags[0].message
         );
