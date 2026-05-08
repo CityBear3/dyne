@@ -826,4 +826,68 @@ mod tests {
             panic!("expected Function, got {f_ty:?}");
         }
     }
+
+    #[test]
+    fn pr3d_alpha_scalar_top_level_mul_carries_dimension() {
+        // Parser-seam pin (TC-IMP3): top-level Mul in unit position.
+        // `Scalar<kg*m>` exercises UnitExpr::Mul(Atom(kg), Atom(m))
+        // through parser → lower_scalar → eval_unit_expr.
+        use crate::sema::ty::{Dimension, Ty};
+
+        let prog = parse_src("function f(x: Scalar<kg*m>): Scalar<kg*m>\n  return x\nend");
+        let typed = check(prog).expect("clean compile");
+        let f_ty = typed
+            .def_types
+            .get(&def_id_of(&typed, "f"))
+            .expect("f's type");
+        if let Ty::Function(_, ret) = f_ty {
+            // kg*m = [1, 1, 0, 0, 0, 0, 0]
+            assert_eq!(**ret, Ty::Scalar(Dimension([1, 1, 0, 0, 0, 0, 0])));
+        } else {
+            panic!("expected Function, got {f_ty:?}");
+        }
+    }
+
+    #[test]
+    fn pr3d_alpha_scalar_top_level_pow_carries_dimension() {
+        // Parser-seam pin (TC-IMP3): top-level Pow in unit position.
+        // `Scalar<s^-2>` exercises UnitExpr::Pow(Atom(s), -2)
+        // through parser → lower_scalar → eval_unit_expr.
+        use crate::sema::ty::{Dimension, Ty};
+
+        let prog = parse_src("function f(x: Scalar<s^-2>): Scalar<s^-2>\n  return x\nend");
+        let typed = check(prog).expect("clean compile");
+        let f_ty = typed
+            .def_types
+            .get(&def_id_of(&typed, "f"))
+            .expect("f's type");
+        if let Ty::Function(_, ret) = f_ty {
+            // s^-2 = [0, 0, -2, 0, 0, 0, 0]
+            assert_eq!(**ret, Ty::Scalar(Dimension([0, 0, -2, 0, 0, 0, 0])));
+        } else {
+            panic!("expected Function, got {f_ty:?}");
+        }
+    }
+
+    #[test]
+    fn pr3d_alpha_scalar_compound_force_unit_carries_dimension() {
+        // Parser-seam pin (TC-IMP3): compound unit with Mul + Div + Pow.
+        // `Scalar<kg*m/s^2>` is the canonical force unit (Newton in base
+        // form). Exercises UnitExpr::Div(Mul(kg, m), Pow(s, 2)) through
+        // parser → lower_scalar → eval_unit_expr.
+        use crate::sema::ty::{Dimension, Ty};
+
+        let prog = parse_src("function f(x: Scalar<kg*m/s^2>): Scalar<kg*m/s^2>\n  return x\nend");
+        let typed = check(prog).expect("clean compile");
+        let f_ty = typed
+            .def_types
+            .get(&def_id_of(&typed, "f"))
+            .expect("f's type");
+        if let Ty::Function(_, ret) = f_ty {
+            // kg*m/s^2 = [1, 1, -2, 0, 0, 0, 0] (Newton in base)
+            assert_eq!(**ret, Ty::Scalar(Dimension([1, 1, -2, 0, 0, 0, 0])));
+        } else {
+            panic!("expected Function, got {f_ty:?}");
+        }
+    }
 }

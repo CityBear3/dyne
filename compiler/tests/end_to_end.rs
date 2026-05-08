@@ -524,3 +524,29 @@ end";
         pow.err()
     );
 }
+
+#[test]
+fn compile_vec_dim_mixing_zero_behavior_unchanged() {
+    // Slice-boundary pin (CQ-IMP1): the Vec arm of `synth_arith`
+    // (compiler/src/sema/check.rs Vec/Vec arm) is a separate code
+    // path from the Scalar arm. PR-3d-α picks the LEFT operand's
+    // dim (so `Vec<3, kg> + Vec<3, m>` returns `Vec<3, kg>`, which
+    // unifies cleanly against an annotated `Vec<3, kg>` return).
+    //
+    // PR-3d-β must flip BOTH the Scalar arm AND the Vec arm. This
+    // test pins the Vec arm so a partial β migration (Scalar flipped
+    // but Vec not) is loudly detectable.
+    //
+    // When PR-3d-β lands, this assertion becomes `result.is_err()`
+    // with `dimension_mismatch`.
+    let src = "\
+function f(x: Vec<3, kg>, y: Vec<3, m>): Vec<3, kg>
+  return x + y
+end";
+    let result = dyne::compile(src);
+    assert!(
+        result.is_ok(),
+        "PR-3d-α should still accept dim-mixing under Vec `+` (β handles the diag); diags: {:?}",
+        result.err()
+    );
+}
