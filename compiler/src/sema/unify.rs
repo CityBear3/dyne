@@ -80,9 +80,10 @@ impl Table {
     }
 
     /// Unify two types structurally. On failure, returns `Err((a, b))`
-    /// with the conflicting (resolved) types — the outermost mismatch
-    /// when the failure was nested. `Ty::Error` unifies with anything to
-    /// preserve the no-cascade invariant downstream.
+    /// with the conflicting (resolved) types — the innermost (deepest)
+    /// mismatch encountered via short-circuit `?` propagation through
+    /// compound arms. `Ty::Error` unifies with anything to preserve the
+    /// no-cascade invariant downstream.
     ///
     /// Compound types (`Function`, `Enum`, `Array`, `Dict`) recurse: their
     /// children unify pairwise. Without recursion, a nested `Ty::Var` (e.g.
