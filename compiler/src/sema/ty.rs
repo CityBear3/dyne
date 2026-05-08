@@ -163,15 +163,8 @@ impl Dimension {
 /// `Dimension` values. Per /design-discussion 2026-05-08 Q3, scope is
 /// SI base 7 + 8 derived units. SI prefixes (km, ms, μs), CGS (cm, g),
 /// and scale-factor folding are deferred to PR-3e or later.
-//
-// Reachable from the lib build only via `eval_unit_expr` below; that
-// function's first non-test caller is `lower_scalar` / `lower_vec` in
-// PR-3d-α Task 6. `expect(dead_code)` doesn't fit here because the test
-// build has callers, which makes the expectation unfulfilled.
-#[allow(dead_code)]
 pub(crate) struct UnitRegistry;
 
-#[allow(dead_code)]
 impl UnitRegistry {
     /// Look up a unit name. Returns `Some(dim)` for known units,
     /// `None` for unknown — caller emits `unknown_unit` diagnostic.
@@ -204,9 +197,6 @@ impl UnitRegistry {
 /// unit names, exponents outside i8 range, and dimension-component
 /// overflow. Returns `Dimension::ZERO` as cascade-suppression sentinel
 /// on any error so subsequent type checking continues.
-//
-// First non-test caller is `lower_scalar` / `lower_vec` in PR-3d-α Task 6.
-#[allow(dead_code)]
 pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnostic>) -> Dimension {
     use crate::ast::UnitExprKind;
     match &u.kind {
@@ -487,16 +477,30 @@ pub(crate) fn expected_type_param_count(def_id: DefId, definitions: &DefinitionT
         .unwrap_or(0)
 }
 
-/// `Scalar` / `Scalar<unit>` → `Ty::Scalar(Dimension::ZERO)`. Per Option β,
-/// any unit argument is silently stripped (PR-3d will replace ZERO with the
-/// actual dimension vector).
+/// `Scalar` / `Scalar<unit>` → `Ty::Scalar(dim)` with `dim` evaluated from
+/// the unit annotation. Bare `Scalar` (no args) is dimensionless. On unknown
+/// unit / overflow / out-of-range exponent, `eval_unit_expr` emits a focused
+/// diag and substitutes `Dimension::ZERO` to suppress cascade.
 fn lower_scalar(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
     match args {
         [] => Ty::Scalar(Dimension::ZERO),
-        // Single-atom units may be parsed as TypeArg::Type(Named("kg")); the
-        // resolver doesn't distinguish them from real types, so accept either
-        // shape here without recording a unit.
-        [TypeArg::Unit(_)] | [TypeArg::Type(_)] => Ty::Scalar(Dimension::ZERO),
+        [TypeArg::Unit(u)] => Ty::Scalar(eval_unit_expr(u, diags)),
+        // Single-atom units (`Scalar<kg>`) parse as TypeArg::Type(Named(...))
+        // because the type-arg parser can't tell `kg` apart from `Int` until
+        // it sees a `*`/`/`/`^`. Synthesize an Atom UnitExpr so the same
+        // unknown_unit / overflow / out-of-range diags apply uniformly.
+        [TypeArg::Type(t)] => match &t.kind {
+            TypeKind::Named(name) => {
+                Ty::Scalar(eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags))
+            }
+            _ => {
+                diags.push(Diagnostic::type_error(
+                    span,
+                    "`Scalar` accepts a unit expression as its argument",
+                ));
+                Ty::Error
+            }
+        },
         _ => {
             diags.push(Diagnostic::type_error(
                 span,
@@ -507,8 +511,9 @@ fn lower_scalar(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty
     }
 }
 
-/// `Vec<N>` or `Vec<N, unit>` → `Ty::Vec(N, ZERO)`. N must be a positive `IntLit`.
-/// The optional second arg is silently stripped per Option β.
+/// `Vec<N>` / `Vec<N, unit>` → `Ty::Vec(N, dim)`. N must be a positive
+/// `IntLit`; the optional second arg is evaluated as a unit (same code
+/// path and diags as `Scalar<unit>`).
 fn lower_vec(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
     let n = match args.first() {
         Some(TypeArg::Int(n)) if *n > 0 => *n as usize,
@@ -527,7 +532,38 @@ fn lower_vec(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
         ));
         return Ty::Error;
     }
-    Ty::Vec(n, Dimension::ZERO)
+    let dim = match args.get(1) {
+        None => Dimension::ZERO,
+        Some(TypeArg::Unit(u)) => eval_unit_expr(u, diags),
+        Some(TypeArg::Type(t)) => match &t.kind {
+            TypeKind::Named(name) => eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags),
+            // Non-named type in unit position: cascade-suppress to ZERO.
+            // The parser is unlikely to produce this shape; Type::Function /
+            // Type::Generic in this position would be a parser bug, not a
+            // user error worth a custom diag.
+            _ => Dimension::ZERO,
+        },
+        Some(TypeArg::Int(_)) => {
+            diags.push(Diagnostic::type_error(
+                span,
+                "`Vec` second argument must be a unit, not an integer",
+            ));
+            return Ty::Error;
+        }
+    };
+    Ty::Vec(n, dim)
+}
+
+/// Build a synthetic `Atom` `UnitExpr` for a single-atom unit that arrived
+/// as `TypeArg::Type(Named("kg"))` because the parser couldn't disambiguate
+/// it from a type at the lookahead boundary. Routes through `eval_unit_expr`
+/// so unknown-unit diagnostics match the compound-form path.
+fn synthesize_atom_unit_expr(t: &Type, name: &str) -> crate::ast::UnitExpr {
+    crate::ast::UnitExpr {
+        kind: crate::ast::UnitExprKind::Atom(name.to_string()),
+        span: t.span,
+        id: t.id,
+    }
 }
 
 /// `Mat<M, N>` → `Ty::Mat(M, N)`. Both args are positive `IntLit`. Spec §4.4
@@ -642,15 +678,81 @@ mod tests {
     }
 
     #[test]
-    fn lower_scalar_with_unit_silently_strips() {
-        // Option β: `Scalar<kg>` → Ty::Scalar(ZERO), no diagnostic.
+    fn lower_scalar_with_kg_unit_produces_kg_dimension() {
         let (ty, diags) = lower_first_let_ty("let x: Scalar<kg> = 0.0");
-        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        assert_eq!(ty, Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0])));
         assert!(
             diags.is_empty(),
-            "expected silent strip, got diags: {:?}",
+            "expected clean lowering, got diags: {:?}",
             diags
         );
+    }
+
+    #[test]
+    fn lower_scalar_with_compound_unit_meters_per_second() {
+        let (ty, diags) = lower_first_let_ty("let v: Scalar<m/s> = 0.0");
+        assert_eq!(ty, Ty::Scalar(Dimension([1, 0, -1, 0, 0, 0, 0])));
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn lower_scalar_with_derived_unit_newton() {
+        let (ty, diags) = lower_first_let_ty("let f: Scalar<N> = 0.0");
+        assert_eq!(ty, Ty::Scalar(Dimension([1, 1, -2, 0, 0, 0, 0])));
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn lower_scalar_with_unknown_unit_emits_diag() {
+        let (ty, diags) = lower_first_let_ty("let x: Scalar<xyz> = 0.0");
+        // Falls back to ZERO (cascade suppression).
+        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown unit"));
+        assert!(diags[0].message.contains("xyz"));
+    }
+
+    #[test]
+    fn lower_scalar_dimensionless_no_args() {
+        let (ty, diags) = lower_first_let_ty("let x: Scalar = 0.0");
+        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn lower_vec_with_unit_kg() {
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3, kg> = 0");
+        assert_eq!(ty, Ty::Vec(3, Dimension([0, 1, 0, 0, 0, 0, 0])));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn lower_vec_with_compound_unit_meters_per_second() {
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3, m/s> = 0");
+        assert_eq!(ty, Ty::Vec(3, Dimension([1, 0, -1, 0, 0, 0, 0])));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn lower_vec_with_derived_unit_force() {
+        let (ty, diags) = lower_first_let_ty("let f: Vec<3, N> = 0");
+        assert_eq!(ty, Ty::Vec(3, Dimension([1, 1, -2, 0, 0, 0, 0])));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn lower_vec_no_unit_is_dimensionless() {
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3> = 0");
+        assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn lower_vec_with_unknown_unit_emits_diag() {
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3, xyz> = 0");
+        assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown unit"));
     }
 
     #[test]

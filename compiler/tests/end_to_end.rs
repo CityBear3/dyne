@@ -68,9 +68,19 @@ end
 
 #[test]
 fn units_in_type_annotation() {
+    // PR-3d-α: `Scalar<kg>` annotation now carries a real `kg` dimension
+    // (was `Dimension::ZERO` placeholder pre-3d). The `1.5` literal is
+    // dimensionless, so the let-binding unify fails — explicit literal→
+    // unit coercion is reserved to PR-3d-β / spec §3 ("conversion to a
+    // unit-annotated `Scalar` requires explicit handling"). The pre-3d
+    // version of this test passed only because both sides lowered to
+    // `Dimension::ZERO`, masking the mismatch.
     let src = "let mass: Scalar<kg> = 1.5";
-    let p = compile(src).unwrap().program;
-    assert_eq!(p.items.len(), 1);
+    let err = compile(src).unwrap_err();
+    assert!(
+        err.iter().any(|d| d.message.contains("mismatch")),
+        "expected a type-mismatch diag, got: {err:?}"
+    );
 }
 
 #[test]
