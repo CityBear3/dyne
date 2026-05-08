@@ -70,12 +70,46 @@ pub enum Ty {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Dimension([i8; 7]);
 
+/// Symbol for each SI base dimension, indexed parallel to `Dimension`'s
+/// inner array: [length, mass, time, current, temperature, amount, luminous].
+const BASE_NAMES: [&str; 7] = ["m", "kg", "s", "A", "K", "mol", "cd"];
+
 impl Dimension {
     pub const ZERO: Self = Self([0; 7]);
 
     /// Returns true iff this dimension is the dimensionless `ZERO`.
     pub fn is_dimensionless(self) -> bool {
         self == Self::ZERO
+    }
+
+    /// Renders the canonical SI base form as ASCII. Examples:
+    ///   ZERO              → "1"
+    ///   [1, 0, ...]       → "m"
+    ///   [1, 1, -2, ...]   → "m*kg*s^-2"
+    /// Negative exponents render as `name^-n`. Exponent of 1 elides.
+    /// Order is fixed: m, kg, s, A, K, mol, cd.
+    pub fn format_si(self) -> String {
+        if self.is_dimensionless() {
+            return "1".to_string();
+        }
+        let mut parts = Vec::new();
+        for (i, &exp) in self.0.iter().enumerate() {
+            if exp == 0 {
+                continue;
+            }
+            if exp == 1 {
+                parts.push(BASE_NAMES[i].to_string());
+            } else {
+                parts.push(format!("{}^{}", BASE_NAMES[i], exp));
+            }
+        }
+        parts.join("*")
+    }
+}
+
+impl std::fmt::Display for Dimension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.format_si())
     }
 }
 
@@ -746,5 +780,56 @@ mod tests {
         let s = Dimension([0, 0, 1, 0, 0, 0, 0]);
         // s ^ -2 = [0, 0, -2, 0, 0, 0, 0] (e.g. acceleration unit denominator)
         assert_eq!(s.pow(-2).unwrap(), Dimension([0, 0, -2, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn format_si_dimensionless_is_one() {
+        assert_eq!(Dimension::ZERO.format_si(), "1");
+    }
+
+    #[test]
+    fn format_si_single_base_unit_no_exponent() {
+        let m = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(m.format_si(), "m");
+    }
+
+    #[test]
+    fn format_si_kg_no_exponent() {
+        let kg = Dimension([0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(kg.format_si(), "kg");
+    }
+
+    #[test]
+    fn format_si_negative_exponent() {
+        let inv_s = Dimension([0, 0, -1, 0, 0, 0, 0]);
+        assert_eq!(inv_s.format_si(), "s^-1");
+    }
+
+    #[test]
+    fn format_si_multi_component_force_in_base_form() {
+        // N = kg*m*s^-2 = [1, 1, -2, 0, 0, 0, 0]
+        let newton_base = Dimension([1, 1, -2, 0, 0, 0, 0]);
+        assert_eq!(newton_base.format_si(), "m*kg*s^-2");
+    }
+
+    #[test]
+    fn format_si_higher_positive_exponent() {
+        // m^3 (volume) = [3, 0, 0, 0, 0, 0, 0]
+        let cubic_m = Dimension([3, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(cubic_m.format_si(), "m^3");
+    }
+
+    #[test]
+    fn format_si_skips_zero_exponents() {
+        // m^2 / s = [2, 0, -1, 0, 0, 0, 0] — kg, A, K, mol, cd zero exponents skipped.
+        let acc_like = Dimension([2, 0, -1, 0, 0, 0, 0]);
+        assert_eq!(acc_like.format_si(), "m^2*s^-1");
+    }
+
+    #[test]
+    fn dimension_display_delegates_to_format_si() {
+        let kg = Dimension([0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(format!("{}", kg), "kg");
+        assert_eq!(format!("{}", Dimension::ZERO), "1");
     }
 }
