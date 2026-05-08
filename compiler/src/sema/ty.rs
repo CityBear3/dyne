@@ -554,20 +554,18 @@ fn lower_vec(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
         Some(TypeArg::Unit(u)) => eval_unit_expr(u, diags),
         Some(TypeArg::Type(t)) => match &t.kind {
             TypeKind::Named(name) => eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags),
-            // Non-named Type in unit position is unreachable from the
-            // current parser: only an Ident at the lookahead boundary
-            // produces `TypeArg::Type(...)`, and that always yields
-            // `TypeKind::Named`. A `Generic` / `Function` shape here
-            // would be a parser regression, not a user error — debug-
-            // assert so it's caught in tests, then cascade-suppress to
-            // ZERO so release builds don't crash on a user program.
+            // A non-Named `TypeArg::Type` (e.g. `Generic`, `Function`)
+            // can reach here when the user writes a type — not a unit —
+            // in the second slot, like `Vec<3, Vec<3>>`. The parser's
+            // type-arg lookahead falls through to a type parse, so this
+            // is a user-visible error path, not a parser bug. Emit a
+            // focused diag mirroring `lower_scalar` and return Ty::Error.
             _ => {
-                debug_assert!(
-                    false,
-                    "lower_vec: unexpected non-Named TypeArg::Type in unit position: {:?}",
-                    t.kind
-                );
-                Dimension::ZERO
+                diags.push(Diagnostic::type_error(
+                    span,
+                    "`Vec` second argument must be a unit expression, not a type",
+                ));
+                return Ty::Error;
             }
         },
         Some(TypeArg::Int(_)) => {
@@ -780,6 +778,21 @@ mod tests {
         assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unknown unit"));
+    }
+
+    #[test]
+    fn lower_vec_with_generic_type_arg_emits_diag() {
+        // Nested generic in unit position (`Vec<3, Vec<3>>`) reaches
+        // `lower_vec` as `TypeArg::Type(Generic(...))` via the parser's
+        // lookahead fallback. Must produce a focused diag, not panic
+        // (debug build) or silently lower to ZERO (release).
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3, Vec<3>> = 0");
+        assert_eq!(ty, Ty::Error);
+        assert!(
+            diags.iter().any(|d| d.message.contains("unit expression")),
+            "expected unit-expression diag, got: {:?}",
+            diags
+        );
     }
 
     #[test]
