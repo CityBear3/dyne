@@ -23,6 +23,10 @@ All commands run from `compiler/` unless noted.
 - Lint: `cargo clippy`
 - Format: `cargo fmt`
 
+## Coding Standards
+
+Follow [Effective Rust](https://www.lurklurk.org/effective-rust/).
+
 ## Architecture notes
 
 The Stage 1 frontend (lexer, parser, AST, error model) is implemented and tested. Subsequent phases (type checker, semantic analysis, interpreter/codegen) are not yet started. When implementing new phases, derive requirements from `docs/language-spec.md` and consume the existing AST defined in `compiler/src/ast/` rather than inferring from incidental code.
