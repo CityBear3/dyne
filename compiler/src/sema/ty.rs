@@ -164,10 +164,10 @@ impl Dimension {
 /// SI base 7 + 8 derived units. SI prefixes (km, ms, μs), CGS (cm, g),
 /// and scale-factor folding are deferred to PR-3e or later.
 //
-// First non-test caller is `eval_unit_expr` (PR-3d-α Task 5). Until Task 5
-// lands the lib build sees no callers and `dead_code` would fire under
-// `-D warnings`; `expect` doesn't fit because the test build uses these
-// items, so the expectation is unfulfilled there.
+// Reachable from the lib build only via `eval_unit_expr` below; that
+// function's first non-test caller is `lower_scalar` / `lower_vec` in
+// PR-3d-α Task 6. `expect(dead_code)` doesn't fit here because the test
+// build has callers, which makes the expectation unfulfilled.
 #[allow(dead_code)]
 pub(crate) struct UnitRegistry;
 
@@ -195,6 +195,54 @@ impl UnitRegistry {
             "V" => Some(Dimension([2, 1, -3, -1, 0, 0, 0])), // W/A = kg*m^2/(s^3*A)
             "Ω" => Some(Dimension([2, 1, -3, -2, 0, 0, 0])), // V/A
             _ => None,
+        }
+    }
+}
+
+/// Evaluate a `UnitExpr` AST node to a `Dimension` value. Recursively
+/// walks Atom / Mul / Div / Pow nodes. Emits diagnostics on unknown
+/// unit names, exponents outside i8 range, and dimension-component
+/// overflow. Returns `Dimension::ZERO` as cascade-suppression sentinel
+/// on any error so subsequent type checking continues.
+//
+// First non-test caller is `lower_scalar` / `lower_vec` in PR-3d-α Task 6.
+#[allow(dead_code)]
+pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnostic>) -> Dimension {
+    use crate::ast::UnitExprKind;
+    match &u.kind {
+        UnitExprKind::Atom(name) => UnitRegistry::lookup(name).unwrap_or_else(|| {
+            diags.push(crate::sema::diag::unknown_unit(u.span, name));
+            Dimension::ZERO
+        }),
+        UnitExprKind::Mul(a, b) => {
+            let l = eval_unit_expr(a, diags);
+            let r = eval_unit_expr(b, diags);
+            l.mul(r).unwrap_or_else(|_| {
+                diags.push(crate::sema::diag::dimension_overflow(u.span));
+                Dimension::ZERO
+            })
+        }
+        UnitExprKind::Div(a, b) => {
+            let l = eval_unit_expr(a, diags);
+            let r = eval_unit_expr(b, diags);
+            l.div(r).unwrap_or_else(|_| {
+                diags.push(crate::sema::diag::dimension_overflow(u.span));
+                Dimension::ZERO
+            })
+        }
+        UnitExprKind::Pow(base, n) => {
+            // Parser produces i64; narrow to i8 with explicit range check
+            // before calling Dimension::pow (which itself may still overflow
+            // when the base has large exponents).
+            if *n < i8::MIN as i64 || *n > i8::MAX as i64 {
+                diags.push(crate::sema::diag::unit_exponent_out_of_range(u.span, *n));
+                return Dimension::ZERO;
+            }
+            let base_dim = eval_unit_expr(base, diags);
+            base_dim.pow(*n as i8).unwrap_or_else(|_| {
+                diags.push(crate::sema::diag::dimension_overflow(u.span));
+                Dimension::ZERO
+            })
         }
     }
 }
@@ -982,5 +1030,136 @@ mod tests {
         assert_eq!(UnitRegistry::lookup("unknown_unit"), None);
         assert_eq!(UnitRegistry::lookup("km"), None); // SI prefix not in registry
         assert_eq!(UnitRegistry::lookup("cm"), None); // CGS not in registry
+    }
+
+    fn unit_atom(name: &str) -> crate::ast::UnitExpr {
+        crate::ast::UnitExpr {
+            kind: crate::ast::UnitExprKind::Atom(name.into()),
+            span: crate::source::Span::new(0, name.len()),
+            id: crate::ids::NodeId(0),
+        }
+    }
+
+    fn unit_mul(a: crate::ast::UnitExpr, b: crate::ast::UnitExpr) -> crate::ast::UnitExpr {
+        crate::ast::UnitExpr {
+            kind: crate::ast::UnitExprKind::Mul(Box::new(a), Box::new(b)),
+            span: crate::source::Span::new(0, 1),
+            id: crate::ids::NodeId(0),
+        }
+    }
+
+    fn unit_div(a: crate::ast::UnitExpr, b: crate::ast::UnitExpr) -> crate::ast::UnitExpr {
+        crate::ast::UnitExpr {
+            kind: crate::ast::UnitExprKind::Div(Box::new(a), Box::new(b)),
+            span: crate::source::Span::new(0, 1),
+            id: crate::ids::NodeId(0),
+        }
+    }
+
+    fn unit_pow(base: crate::ast::UnitExpr, n: i64) -> crate::ast::UnitExpr {
+        crate::ast::UnitExpr {
+            kind: crate::ast::UnitExprKind::Pow(Box::new(base), n),
+            span: crate::source::Span::new(0, 1),
+            id: crate::ids::NodeId(0),
+        }
+    }
+
+    #[test]
+    fn eval_unit_expr_atom_kg() {
+        let u = unit_atom("kg");
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([0, 1, 0, 0, 0, 0, 0]));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn eval_unit_expr_unknown_atom_emits_diag_returns_zero() {
+        let u = unit_atom("xyz_unit");
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension::ZERO);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown unit"));
+        assert!(diags[0].message.contains("xyz_unit"));
+    }
+
+    #[test]
+    fn eval_unit_expr_mul_combines_dimensions() {
+        // m * s → [1, 0, 1, 0, 0, 0, 0]
+        let u = unit_mul(unit_atom("m"), unit_atom("s"));
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([1, 0, 1, 0, 0, 0, 0]));
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn eval_unit_expr_div_subtracts_dimensions() {
+        // m / s → [1, 0, -1, 0, 0, 0, 0]
+        let u = unit_div(unit_atom("m"), unit_atom("s"));
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([1, 0, -1, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn eval_unit_expr_pow_multiplies_exponent() {
+        // m^2 → [2, 0, 0, 0, 0, 0, 0]
+        let u = unit_pow(unit_atom("m"), 2);
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([2, 0, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn eval_unit_expr_negative_exponent() {
+        // s^-1 (frequency) → [0, 0, -1, 0, 0, 0, 0]
+        let u = unit_pow(unit_atom("s"), -1);
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([0, 0, -1, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn eval_unit_expr_compound_meters_per_second_squared() {
+        // m / s^2 → [1, 0, -2, 0, 0, 0, 0] (acceleration)
+        let u = unit_div(unit_atom("m"), unit_pow(unit_atom("s"), 2));
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([1, 0, -2, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn eval_unit_expr_overflow_emits_dimension_overflow_diag() {
+        // m^100 → element 100, then ^2 = 200 overflows i8.
+        let u = unit_pow(unit_pow(unit_atom("m"), 100), 2);
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension::ZERO);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("dimension component overflow"));
+    }
+
+    #[test]
+    fn eval_unit_expr_exponent_out_of_i8_range_diag() {
+        // kg^1000 — exponent literal 1000 > i8::MAX = 127.
+        let u = unit_pow(unit_atom("kg"), 1000);
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension::ZERO);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("out of valid range"));
+        assert!(diags[0].message.contains("1000"));
+    }
+
+    #[test]
+    fn eval_unit_expr_derived_unit_lookup_force() {
+        // N → [1, 1, -2, 0, 0, 0, 0] (Newton)
+        let u = unit_atom("N");
+        let mut diags = Vec::new();
+        let dim = eval_unit_expr(&u, &mut diags);
+        assert_eq!(dim, Dimension([1, 1, -2, 0, 0, 0, 0]));
+        assert!(diags.is_empty());
     }
 }
