@@ -342,6 +342,38 @@ fn compile_pow_diag_uses_caret_syntax() {
 }
 
 #[test]
+fn compile_canonical_builtins_produce_no_diags() {
+    // PR-3c CQ #4 defensive guard regression test. `compile()` carries
+    // a `debug_assert!` that `sema::check` over the canonical built-ins-
+    // only Program returns Ok with zero diagnostics — anything else
+    // signals a regression in `compiler/builtins/builtins.dy`. This
+    // test exercises canonical Option<T> + Result<T, E> usage through
+    // the full `compile()` pipeline; reaching `Ok(_)` here means the
+    // `debug_assert!` did not fire (i.e. built-ins remain sema-clean
+    // on the happy path) AND user-side checking still passes.
+    let src = "\
+function f(o: Option<Int>): Int
+    return match o
+        case Some(x) then x
+        case None then 0
+    end
+end
+function g(r: Result<Int, String>): Int
+    return match r
+        case Ok(v) then v
+        case Err(_) then -1
+    end
+end
+";
+    let result = dyne::compile(src);
+    assert!(
+        result.is_ok(),
+        "expected canonical built-in usage to compile without diags, got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
 fn match_inline_nested_generic_missing_inner_some_none_diag() {
     // PR-3c CQ #1 regression: when the scrutinee is constructed inline
     // (`Some(Some(1))`), the outer Option's type-arg is a still-unbound

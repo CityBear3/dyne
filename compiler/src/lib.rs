@@ -36,6 +36,27 @@ pub fn compile(source: &str) -> Result<TypedProgram, Vec<Diagnostic>> {
     // Phase 1: built-ins (panics on failure).
     let builtins_ctx = sema::builtins::load_builtins();
     let n_builtin_items = builtins_ctx.program.items.len();
+
+    // Defensive built-ins-clean invariant. `sema::check` over the
+    // built-ins-only Program must succeed with zero diagnostics —
+    // anything else means a regression in `compiler/builtins/builtins.dy`
+    // (or in a sema rule that fires against built-in items). We isolate
+    // this from the user-source check because Span carries no source-
+    // file identifier; trying to attribute a post-merge diagnostic back
+    // to "user vs built-in" by byte range is heuristic at best.
+    // Running sema::check over the built-ins alone removes that
+    // ambiguity at the cost of one extra check_pass per compile —
+    // `debug_assert!` confines that cost to debug builds, which is
+    // where regressions are caught (CI runs in debug; release builds
+    // ship a verified compiler).
+    debug_assert!(
+        sema::check(builtins_ctx.program.clone()).is_ok(),
+        "compiler bug: builtins.dy must compile cleanly without sema \
+         diagnostics — this indicates a regression in \
+         compiler/builtins/builtins.dy (or in a sema rule that fires \
+         against built-in items)"
+    );
+
     // Phase 2: tokenize + parse user source with a NodeId offset so its
     // ids are disjoint from the built-ins'.
     let user_tokens = lexer::tokenize(source).map_err(|d| vec![d])?;
