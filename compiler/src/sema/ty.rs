@@ -213,12 +213,25 @@ impl UnitRegistry {
 /// unit names, exponents outside i8 range, and dimension-component
 /// overflow. Returns `Dimension::ZERO` as cascade-suppression sentinel
 /// on any error so subsequent type checking continues.
+///
+/// Unknown-unit diagnostics are deduplicated by message against the
+/// already-emitted `diags` vec so a typo like `xyz` reported in the
+/// same diagnostic pile (e.g. multiple params in one signature, or
+/// a compound `xyz*xyz/xyz` in one annotation) surfaces once. Dedup
+/// uses the rendered message so it stays scoped to the same `&mut
+/// Vec<Diagnostic>` — across separate vecs (signature_pass vs
+/// TypeChecker.diagnostics, merged at the end of `check()`) the
+/// dedup does not cross the boundary; a follow-up can hoist a shared
+/// `HashSet<String>` if that edge case surfaces.
 pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnostic>) -> Dimension {
     use crate::ast::UnitExprKind;
     use crate::sema::diag;
     match &u.kind {
         UnitExprKind::Atom(name) => UnitRegistry::lookup(name).unwrap_or_else(|| {
-            diags.push(diag::unknown_unit(u.span, name));
+            let new_diag = diag::unknown_unit(u.span, name);
+            if !diags.iter().any(|d| d.message == new_diag.message) {
+                diags.push(new_diag);
+            }
             Dimension::ZERO
         }),
         UnitExprKind::Mul(a, b) => {
@@ -778,6 +791,44 @@ mod tests {
         assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unknown unit"));
+    }
+
+    #[test]
+    fn lower_scalar_with_compound_unknown_unit_dedup() {
+        // `xyz*xyz/xyz` would naturally fire 3× unknown_unit (one per
+        // Atom) without dedup. The compile-scoped dedup in
+        // eval_unit_expr collapses to a single diag for the same name
+        // within one diags vec.
+        let (ty, diags) = lower_first_let_ty("let x: Scalar<xyz*xyz/xyz> = 0.0");
+        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        let unknown_xyz: Vec<&Diagnostic> = diags
+            .iter()
+            .filter(|d| d.message.contains("unknown unit") && d.message.contains("xyz"))
+            .collect();
+        assert_eq!(
+            unknown_xyz.len(),
+            1,
+            "expected one xyz diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn lower_scalar_with_distinct_unknown_units_each_reported() {
+        // Different unknown names must each surface separately —
+        // the dedup is name-scoped, not blanket-suppressed.
+        let (ty, diags) = lower_first_let_ty("let x: Scalar<foo*bar/foo> = 0.0");
+        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        let unknown_foo = diags
+            .iter()
+            .filter(|d| d.message.contains("unknown unit") && d.message.contains("foo"))
+            .count();
+        let unknown_bar = diags
+            .iter()
+            .filter(|d| d.message.contains("unknown unit") && d.message.contains("bar"))
+            .count();
+        assert_eq!(unknown_foo, 1, "diags: {:?}", diags);
+        assert_eq!(unknown_bar, 1, "diags: {:?}", diags);
     }
 
     #[test]

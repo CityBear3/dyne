@@ -447,6 +447,40 @@ fn compile_unknown_unit_in_annotation_fires_diag() {
 }
 
 #[test]
+fn compile_unknown_unit_repeated_in_signature_dedups() {
+    // A typo'd unit reused across param + return slots in the same
+    // signature lowers to multiple eval_unit_expr calls into the same
+    // diags vec; dedup must collapse them to a single diag.
+    let src = "function f(x: Scalar<xyz>): Scalar<xyz>\n  return x\nend";
+    let result = dyne::compile(src);
+    assert!(result.is_err());
+    let diags = result.unwrap_err();
+    let xyz_count = diags
+        .iter()
+        .filter(|d| d.message.contains("unknown unit") && d.message.contains("xyz"))
+        .count();
+    assert_eq!(xyz_count, 1, "expected one xyz diag, got: {diags:?}");
+}
+
+#[test]
+fn compile_unknown_unit_repeated_across_params_dedups() {
+    // Three params with the same typo'd unit: the same dedup as above,
+    // exercised at higher cardinality.
+    let src = "\
+function f(a: Scalar<xyz>, b: Scalar<xyz>, c: Scalar<xyz>): Scalar
+  return 0.0
+end";
+    let result = dyne::compile(src);
+    assert!(result.is_err());
+    let diags = result.unwrap_err();
+    let xyz_count = diags
+        .iter()
+        .filter(|d| d.message.contains("unknown unit") && d.message.contains("xyz"))
+        .count();
+    assert_eq!(xyz_count, 1, "expected one xyz diag, got: {diags:?}");
+}
+
+#[test]
 fn compile_operator_side_zero_behavior_unchanged() {
     // Slice-boundary pin: arithmetic and `^` on dim-carrying Scalars
     // *would* be a dim-mismatch / dim-propagation once PR-3d-β replaces
