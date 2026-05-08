@@ -97,6 +97,15 @@ impl Table {
     /// No occurs-check: dyne has no recursive type aliases, and Enums/
     /// Structs reference DefIds (not nested Tys), so no Ty cycles can
     /// form by construction.
+    // Invariant: bindings written by successful sub-unifications (Var-
+    // arms, recursion through compound arms) PERSIST in the table even
+    // when a later sibling fails and `?` bubbles Err. This is currently
+    // safe because Var allocation is per-call-site
+    // (`instantiate_variant_schema` mints a fresh batch per use site),
+    // so a stale partial binding from a failed unify cannot collide
+    // with a future unrelated unify. See
+    // `unify_compound_partial_bind_persists_after_err` for a regression
+    // test pinning this behavior.
     pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
         let a = self.resolve(a);
         let b = self.resolve(b);
@@ -214,6 +223,47 @@ mod tests {
         let v = t.fresh();
         t.unify(&Ty::Var(v), &Ty::Var(v)).unwrap();
         assert_eq!(t.resolve(&Ty::Var(v)), Ty::Var(v));
+    }
+
+    #[test]
+    fn unify_compound_partial_bind_persists_after_err() {
+        // Partial-binding pollution after a failed compound unify is
+        // intentional but undocumented before this commit. Recursion
+        // through compound arms uses `?` propagation: a Var binding
+        // written by an early successful sub-unify is NOT rolled back
+        // when a later sibling fails. This regression test pins the
+        // current behavior.
+        //
+        // Setup:
+        //   unify(Function([Var(α), Int], Bool),
+        //         Function([Int,    String], Bool))
+        //     - First arg pair:  (Var(α), Int)    → cells[α] = Int (Ok)
+        //     - Second arg pair: (Int,    String) → fails → ? bubbles Err
+        // The α=Int binding from the first pair persists in the table
+        // even though the overall unify returned Err.
+        //
+        // Currently safe because each variant-constructor use site
+        // mints its own fresh Var batch via
+        // `instantiate_variant_schema`, so a stale binding from a
+        // failed unify cannot collide with an unrelated future unify.
+        // If that freshness invariant is ever weakened, this test
+        // surfaces the change as a deliberate failure here rather than
+        // as a hard-to-trace cross-call-site type-mismatch.
+        let mut t = Table::new();
+        let alpha = t.fresh();
+        let res = t.unify(
+            &Ty::Function(vec![Ty::Var(alpha), Ty::Int], Box::new(Ty::Bool)),
+            &Ty::Function(vec![Ty::Int, Ty::String], Box::new(Ty::Bool)),
+        );
+        assert!(
+            res.is_err(),
+            "expected unify to fail on the (Int, String) sub-pair"
+        );
+        assert_eq!(
+            t.resolve(&Ty::Var(alpha)),
+            Ty::Int,
+            "partial binding from the first arg pair must persist after Err"
+        );
     }
 
     #[test]
