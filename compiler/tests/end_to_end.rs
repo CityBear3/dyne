@@ -423,3 +423,54 @@ fn compile_user_redeclares_builtin_option_yields_diag() {
         diags
     );
 }
+
+// PR-3d-α slice promise: annotations now carry real `Dimension` values
+// end-to-end. Tests that need to inspect `Dimension` values live inside
+// the crate (`compiler/src/sema.rs::tests`), since `Dimension`'s inner
+// array is intentionally private (future migration to rational exponents
+// is module-local). The two black-box tests below verify externally
+// observable behavior — diagnostic surfacing and the slice boundary —
+// without needing private constructors.
+
+#[test]
+fn compile_unknown_unit_in_annotation_fires_diag() {
+    let src = "function f(): Scalar<xyzzy>\n  return 1.0\nend";
+    let result = dyne::compile(src);
+    assert!(result.is_err(), "expected compile error for unknown unit");
+    let diags = result.unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown unit") && d.message.contains("xyzzy")),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_operator_side_zero_behavior_unchanged() {
+    // Slice-boundary pin: `x + y` with `x: Scalar<kg>` and `y: Scalar<m>`
+    // *would* be a dim-mismatch once PR-3d-β replaces synth_arith's ZERO
+    // drop with real propagation. In PR-3d-α we still accept it because
+    // the operator path strips dim before unify ever sees the kg/m
+    // disagreement (the function returns dimensionless `Scalar`, which
+    // matches synth_arith's ZERO output).
+    //
+    // Params (rather than let-bindings) are used so the test exercises
+    // pure operator behavior without tripping the literal→unit coercion
+    // gap (deferred to PR-3d-β; tests like
+    // `units_in_type_annotation` document that gap separately).
+    //
+    // When PR-3d-β lands operator dim propagation, this test flips: the
+    // assertion becomes `result.is_err()` with a `dimension_mismatch`
+    // diag.
+    let src = "\
+function f(x: Scalar<kg>, y: Scalar<m>): Scalar
+  return x + y
+end";
+    let result = dyne::compile(src);
+    assert!(
+        result.is_ok(),
+        "PR-3d-α should still accept dim-mixing in operators (β handles the diag); diags: {:?}",
+        result.err()
+    );
+}

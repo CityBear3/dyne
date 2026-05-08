@@ -752,4 +752,78 @@ mod tests {
         assert!(!typed.struct_fields.is_empty());
         assert!(!typed.def_types.is_empty());
     }
+
+    // PR-3d-α e2e tests confirming annotations carry real `Dimension`
+    // values through to `def_types`. Live inside the crate because
+    // `Dimension`'s inner array is intentionally private; see
+    // `tests/end_to_end.rs` for the black-box companions
+    // (`compile_unknown_unit_in_annotation_fires_diag` and the slice-
+    // boundary `compile_operator_side_zero_behavior_unchanged`).
+
+    fn def_id_of(typed: &TypedProgram, name: &str) -> crate::ids::DefId {
+        typed
+            .definitions
+            .iter()
+            .find(|(_, info)| info.name == name)
+            .map(|(id, _)| *id)
+            .unwrap_or_else(|| panic!("expected definition `{name}`"))
+    }
+
+    // Param-passthrough function bodies (rather than `return 1.0`) so the
+    // RHS has the annotated type without going through literal-to-unit
+    // coercion (deferred to PR-3d-β). The annotations themselves still
+    // exercise `lower_scalar` / `lower_vec` end-to-end, which is what
+    // these tests pin.
+
+    #[test]
+    fn pr3d_alpha_scalar_kg_annotation_carries_kg_dimension() {
+        use crate::sema::ty::{Dimension, Ty};
+
+        let prog = parse_src("function f(x: Scalar<kg>): Scalar<kg>\n  return x\nend");
+        let typed = check(prog).expect("clean compile");
+        let f_ty = typed
+            .def_types
+            .get(&def_id_of(&typed, "f"))
+            .expect("f's type");
+        if let Ty::Function(_, ret) = f_ty {
+            assert_eq!(**ret, Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0])));
+        } else {
+            panic!("expected Function type, got {f_ty:?}");
+        }
+    }
+
+    #[test]
+    fn pr3d_alpha_scalar_meters_per_second_carries_compound_dimension() {
+        use crate::sema::ty::{Dimension, Ty};
+
+        let prog = parse_src("function f(x: Scalar<m/s>): Scalar<m/s>\n  return x\nend");
+        let typed = check(prog).expect("clean compile");
+        let f_ty = typed
+            .def_types
+            .get(&def_id_of(&typed, "f"))
+            .expect("f's type");
+        if let Ty::Function(_, ret) = f_ty {
+            // m/s = [1, 0, -1, 0, 0, 0, 0]
+            assert_eq!(**ret, Ty::Scalar(Dimension([1, 0, -1, 0, 0, 0, 0])));
+        } else {
+            panic!("expected Function, got {f_ty:?}");
+        }
+    }
+
+    #[test]
+    fn pr3d_alpha_vec_with_unit_carries_dimension() {
+        use crate::sema::ty::{Dimension, Ty};
+
+        let prog = parse_src("function f(v: Vec<3, m/s>): Vec<3, m/s>\n  return v\nend");
+        let typed = check(prog).expect("clean compile");
+        let f_ty = typed
+            .def_types
+            .get(&def_id_of(&typed, "f"))
+            .expect("f's type");
+        if let Ty::Function(_, ret) = f_ty {
+            assert_eq!(**ret, Ty::Vec(3, Dimension([1, 0, -1, 0, 0, 0, 0])));
+        } else {
+            panic!("expected Function, got {f_ty:?}");
+        }
+    }
 }

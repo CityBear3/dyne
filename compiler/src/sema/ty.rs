@@ -61,14 +61,18 @@ pub enum Ty {
 /// Integer dimension vector over the seven SI base dimensions:
 /// [length, mass, time, current, temperature, amount, luminous].
 ///
-/// PR-3b only uses `Dimension::ZERO` (dimensionless). PR-3d will populate
-/// the inner `i8` array, add `mul`/`div`/`pow`/`is_dimensionless`/`format_si`
-/// methods, and replace `ZERO` placeholders in operator rules.
+/// PR-3b only uses `Dimension::ZERO` (dimensionless). PR-3d populates
+/// the inner `i8` array via `mul`/`div`/`pow` arithmetic and the
+/// `UnitRegistry` lookup table; `format_si` renders the canonical SI
+/// base form for diagnostics.
 ///
-/// The inner array is private — future migration to rational exponents
-/// (PR-3? — noise spectroscopy use cases) is local to this module.
+/// The inner array is `pub(crate)` — accessible to crate-internal
+/// callers (`UnitRegistry::lookup`, sema tests) but NOT exposed in the
+/// external `dyne::sema::ty` API surface. Future migration to rational
+/// exponents (PR-3? — noise spectroscopy use cases) stays scoped to
+/// the crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Dimension([i8; 7]);
+pub struct Dimension(pub(crate) [i8; 7]);
 
 /// Symbol for each SI base dimension, indexed parallel to `Dimension`'s
 /// inner array: [length, mass, time, current, temperature, amount, luminous].
