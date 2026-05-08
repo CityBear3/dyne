@@ -40,6 +40,45 @@ impl Table {
         }
     }
 
+    /// Recursive variant of [`Self::resolve`]: also rewrites `Var`s nested
+    /// inside compound types (`Function` / `Enum` / `Array` / `Dict`).
+    ///
+    /// Plain `resolve` only walks the outermost Var chain — when the
+    /// outer head is already concrete (e.g. `Enum(option, [Var(α)])`),
+    /// any unification-bound Var sitting inside a child position is left
+    /// alone. PR-3c's exhaustiveness check needs the deeper rewrite:
+    /// when the scrutinee is constructed inline (`Some(Some(1))`), the
+    /// outer Option's argument is still a Var when `synth_match` runs,
+    /// and the inner column's substituted payload type would otherwise
+    /// fall into exhaust's `Ty::Var(_)` skip arm.
+    ///
+    /// Scope: resolves only the exhaust-level gap. Storage of unresolved
+    /// Vars inside `TypedProgram.types` (the §1078 leak) is a separate
+    /// concern handled later — this helper exists to keep the synth_match
+    /// fix minimal and not perturb other expression types.
+    ///
+    /// `Vec`/`Mat`/`Scalar` carry no `Ty` children (their type
+    /// parameters are size and dimension data), so they pass through
+    /// unchanged via the head clone.
+    pub(crate) fn resolve_deep(&self, ty: &Ty) -> Ty {
+        let head = self.resolve(ty);
+        match head {
+            Ty::Function(args, ret) => Ty::Function(
+                args.iter().map(|a| self.resolve_deep(a)).collect(),
+                Box::new(self.resolve_deep(&ret)),
+            ),
+            Ty::Enum(def, args) => {
+                Ty::Enum(def, args.iter().map(|a| self.resolve_deep(a)).collect())
+            }
+            Ty::Array(t) => Ty::Array(Box::new(self.resolve_deep(&t))),
+            Ty::Dict(k, v) => Ty::Dict(
+                Box::new(self.resolve_deep(&k)),
+                Box::new(self.resolve_deep(&v)),
+            ),
+            other => other,
+        }
+    }
+
     /// Unify two types structurally. On failure, returns `Err((a, b))`
     /// with the conflicting (resolved) types — the outermost mismatch
     /// when the failure was nested. `Ty::Error` unifies with anything to

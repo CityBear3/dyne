@@ -709,7 +709,16 @@ impl<'a> TypeChecker<'a> {
         // a `Maybe<Var(α)>` becomes `Maybe<Int>` once an arm pattern's
         // payload binds α=Int, and exhaustiveness can then substitute
         // payload params correctly.
-        let resolved_scrut = self.unify_table.resolve(&scrut_ty);
+        //
+        // `resolve_deep` (rather than plain `resolve`) is required for
+        // inline-constructed scrutinees like `match Some(Some(1)) ...`:
+        // the outer Option's type-arg is a still-unbound Var at the
+        // top level, but the inner Var has been bound to `Int` by the
+        // inner constructor's argument unification. Without the deep
+        // walk, the inner column's substituted payload type would be
+        // `Var(α)` and exhaust would fall into its sentinel skip arm,
+        // silently accepting a non-exhaustive nested pattern set.
+        let resolved_scrut = self.unify_table.resolve_deep(&scrut_ty);
         let exhaust_diags = crate::sema::exhaust::check_exhaustive(
             &resolved_scrut,
             arms,

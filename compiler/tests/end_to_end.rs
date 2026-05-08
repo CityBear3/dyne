@@ -342,6 +342,29 @@ fn compile_pow_diag_uses_caret_syntax() {
 }
 
 #[test]
+fn match_inline_nested_generic_missing_inner_some_none_diag() {
+    // PR-3c CQ #1 regression: when the scrutinee is constructed inline
+    // (`Some(Some(1))`), the outer Option's type-arg is a still-unbound
+    // unification var at the time `synth_match` runs. The inner column's
+    // payload type — substituted from the variant schema — therefore
+    // resolves to `Ty::Var(_)` and exhaust falls through to its sentinel
+    // skip arm, silently accepting the missing inner `None` arm.
+    //
+    // Fix: `synth_match` must deep-resolve the scrutinee through the
+    // unification table before handing it to `check_exhaustive`, so the
+    // inner column carries `Option<Int>` rather than `Option<Var(α)>`.
+    let src = "function f(): Int\n  return match Some(Some(1))\n    case Some(Some(x)) then x\n    case None then 0\n  end\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("non-exhaustive") && d.message.contains("None")),
+        "expected non-exhaustive diag mentioning missing inner `None`, got: {:?}",
+        diags
+    );
+}
+
+#[test]
 fn compile_user_redeclares_builtin_option_yields_diag() {
     // Negative interaction with built-ins: user declares an `enum
     // Option<T>` that collides with the built-in. Resolver fires
