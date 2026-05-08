@@ -159,6 +159,46 @@ impl Dimension {
     }
 }
 
+/// Static built-in unit registry. Maps unit names to canonical
+/// `Dimension` values. Per /design-discussion 2026-05-08 Q3, scope is
+/// SI base 7 + 8 derived units. SI prefixes (km, ms, μs), CGS (cm, g),
+/// and scale-factor folding are deferred to PR-3e or later.
+//
+// First non-test caller is `eval_unit_expr` (PR-3d-α Task 5). Until Task 5
+// lands the lib build sees no callers and `dead_code` would fire under
+// `-D warnings`; `expect` doesn't fit because the test build uses these
+// items, so the expectation is unfulfilled there.
+#[allow(dead_code)]
+pub(crate) struct UnitRegistry;
+
+#[allow(dead_code)]
+impl UnitRegistry {
+    /// Look up a unit name. Returns `Some(dim)` for known units,
+    /// `None` for unknown — caller emits `unknown_unit` diagnostic.
+    pub(crate) fn lookup(name: &str) -> Option<Dimension> {
+        match name {
+            // SI base units
+            "m" => Some(Dimension([1, 0, 0, 0, 0, 0, 0])),
+            "kg" => Some(Dimension([0, 1, 0, 0, 0, 0, 0])),
+            "s" => Some(Dimension([0, 0, 1, 0, 0, 0, 0])),
+            "A" => Some(Dimension([0, 0, 0, 1, 0, 0, 0])),
+            "K" => Some(Dimension([0, 0, 0, 0, 1, 0, 0])),
+            "mol" => Some(Dimension([0, 0, 0, 0, 0, 1, 0])),
+            "cd" => Some(Dimension([0, 0, 0, 0, 0, 0, 1])),
+            // SI derived units (in canonical base form)
+            "N" => Some(Dimension([1, 1, -2, 0, 0, 0, 0])), // kg*m/s^2
+            "J" => Some(Dimension([2, 1, -2, 0, 0, 0, 0])), // N*m = kg*m^2/s^2
+            "W" => Some(Dimension([2, 1, -3, 0, 0, 0, 0])), // J/s
+            "Pa" => Some(Dimension([-1, 1, -2, 0, 0, 0, 0])), // N/m^2
+            "Hz" => Some(Dimension([0, 0, -1, 0, 0, 0, 0])), // 1/s
+            "C" => Some(Dimension([0, 0, 1, 1, 0, 0, 0])),  // A*s
+            "V" => Some(Dimension([2, 1, -3, -1, 0, 0, 0])), // W/A = kg*m^2/(s^3*A)
+            "Ω" => Some(Dimension([2, 1, -3, -2, 0, 0, 0])), // V/A
+            _ => None,
+        }
+    }
+}
+
 /// Index into a unification table. Allocated by `unify::Table::fresh()`
 /// — that's the only legitimate constructor, so the inner index is
 /// `pub(crate)` rather than `pub`. External consumers can match on
@@ -831,5 +871,116 @@ mod tests {
         let kg = Dimension([0, 1, 0, 0, 0, 0, 0]);
         assert_eq!(format!("{}", kg), "kg");
         assert_eq!(format!("{}", Dimension::ZERO), "1");
+    }
+
+    #[test]
+    fn unit_registry_si_base_seven() {
+        assert_eq!(
+            UnitRegistry::lookup("m"),
+            Some(Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+        assert_eq!(
+            UnitRegistry::lookup("kg"),
+            Some(Dimension([0, 1, 0, 0, 0, 0, 0]))
+        );
+        assert_eq!(
+            UnitRegistry::lookup("s"),
+            Some(Dimension([0, 0, 1, 0, 0, 0, 0]))
+        );
+        assert_eq!(
+            UnitRegistry::lookup("A"),
+            Some(Dimension([0, 0, 0, 1, 0, 0, 0]))
+        );
+        assert_eq!(
+            UnitRegistry::lookup("K"),
+            Some(Dimension([0, 0, 0, 0, 1, 0, 0]))
+        );
+        assert_eq!(
+            UnitRegistry::lookup("mol"),
+            Some(Dimension([0, 0, 0, 0, 0, 1, 0]))
+        );
+        assert_eq!(
+            UnitRegistry::lookup("cd"),
+            Some(Dimension([0, 0, 0, 0, 0, 0, 1]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_newton() {
+        // N = kg*m/s^2 = [1, 1, -2, 0, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("N"),
+            Some(Dimension([1, 1, -2, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_joule() {
+        // J = N*m = kg*m^2/s^2 = [2, 1, -2, 0, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("J"),
+            Some(Dimension([2, 1, -2, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_watt() {
+        // W = J/s = kg*m^2/s^3 = [2, 1, -3, 0, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("W"),
+            Some(Dimension([2, 1, -3, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_pascal() {
+        // Pa = N/m^2 = kg/(m*s^2) = [-1, 1, -2, 0, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("Pa"),
+            Some(Dimension([-1, 1, -2, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_hertz() {
+        // Hz = 1/s = [0, 0, -1, 0, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("Hz"),
+            Some(Dimension([0, 0, -1, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_coulomb() {
+        // C = A*s = [0, 0, 1, 1, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("C"),
+            Some(Dimension([0, 0, 1, 1, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_volt() {
+        // V = W/A = kg*m^2/(s^3*A) = [2, 1, -3, -1, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("V"),
+            Some(Dimension([2, 1, -3, -1, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_derived_ohm() {
+        // Ω = V/A = kg*m^2/(s^3*A^2) = [2, 1, -3, -2, 0, 0, 0]
+        assert_eq!(
+            UnitRegistry::lookup("Ω"),
+            Some(Dimension([2, 1, -3, -2, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn unit_registry_unknown_returns_none() {
+        assert_eq!(UnitRegistry::lookup("unknown_unit"), None);
+        assert_eq!(UnitRegistry::lookup("km"), None); // SI prefix not in registry
+        assert_eq!(UnitRegistry::lookup("cm"), None); // CGS not in registry
     }
 }
