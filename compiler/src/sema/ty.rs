@@ -79,6 +79,52 @@ impl Dimension {
     }
 }
 
+/// Reported by `Dimension::mul` / `div` / `pow` when an i8 element would
+/// overflow during the operation. Sites that compute dimensions push
+/// `dimension_overflow` diagnostics and substitute `Dimension::ZERO` to
+/// suppress cascade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverflowError;
+
+impl Dimension {
+    /// Pointwise add: each element of `self` and `other` are added with
+    /// checked i8 arithmetic. Returns `Err(OverflowError)` if any element
+    /// overflows i8 (`i8::MIN..=i8::MAX`).
+    //
+    // Name matches the unit-algebra domain (multiplying two unit vectors =
+    // pointwise add of exponents, e.g. `kg * m/s = kg*m/s`). Not the
+    // numeric `std::ops::Mul`, hence the allow.
+    #[allow(clippy::should_implement_trait)]
+    pub fn mul(self, other: Self) -> Result<Self, OverflowError> {
+        self.pointwise(other, i8::checked_add)
+    }
+
+    /// Pointwise subtract.
+    #[allow(clippy::should_implement_trait)]
+    pub fn div(self, other: Self) -> Result<Self, OverflowError> {
+        self.pointwise(other, i8::checked_sub)
+    }
+
+    /// Pointwise multiply by integer exponent. `pow(self, n)` produces a
+    /// dimension where each element is `self[i] * n`. Returns Err on i8
+    /// overflow.
+    pub fn pow(self, n: i8) -> Result<Self, OverflowError> {
+        let mut out = [0i8; 7];
+        for (dst, &a) in out.iter_mut().zip(&self.0) {
+            *dst = a.checked_mul(n).ok_or(OverflowError)?;
+        }
+        Ok(Self(out))
+    }
+
+    fn pointwise(self, other: Self, op: fn(i8, i8) -> Option<i8>) -> Result<Self, OverflowError> {
+        let mut out = [0i8; 7];
+        for (dst, (&a, &b)) in out.iter_mut().zip(self.0.iter().zip(&other.0)) {
+            *dst = op(a, b).ok_or(OverflowError)?;
+        }
+        Ok(Self(out))
+    }
+}
+
 /// Index into a unification table. Allocated by `unify::Table::fresh()`
 /// — that's the only legitimate constructor, so the inner index is
 /// `pub(crate)` rather than `pub`. External consumers can match on
@@ -638,5 +684,67 @@ mod tests {
             "msg: {}",
             diags[0].message
         );
+    }
+
+    #[test]
+    fn dimension_mul_pointwise_adds_elements() {
+        let kg = Dimension([0, 1, 0, 0, 0, 0, 0]);
+        let m_per_s = Dimension([1, 0, -1, 0, 0, 0, 0]);
+        // kg * m/s = kg*m/s = [1, 1, -1, 0, 0, 0, 0]
+        let result = kg.mul(m_per_s).unwrap();
+        assert_eq!(result, Dimension([1, 1, -1, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn dimension_mul_overflow_returns_err() {
+        let big = Dimension([100, 0, 0, 0, 0, 0, 0]);
+        let bigger = Dimension([50, 0, 0, 0, 0, 0, 0]);
+        // 100 + 50 = 150, overflows i8 (max 127).
+        assert_eq!(big.mul(bigger), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_div_pointwise_subtracts_elements() {
+        let m = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        let s = Dimension([0, 0, 1, 0, 0, 0, 0]);
+        // m / s = [1, 0, -1, 0, 0, 0, 0]
+        let result = m.div(s).unwrap();
+        assert_eq!(result, Dimension([1, 0, -1, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn dimension_div_underflow_returns_err() {
+        let small = Dimension([-100, 0, 0, 0, 0, 0, 0]);
+        let big_pos = Dimension([50, 0, 0, 0, 0, 0, 0]);
+        // -100 - 50 = -150, underflows i8 (min -128).
+        assert_eq!(small.div(big_pos), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_pow_multiplies_elements_by_exponent() {
+        let m = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        // m ^ 3 = m^3 = [3, 0, 0, 0, 0, 0, 0]
+        let result = m.pow(3).unwrap();
+        assert_eq!(result, Dimension([3, 0, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn dimension_pow_overflow_returns_err() {
+        let m_strong = Dimension([10, 0, 0, 0, 0, 0, 0]);
+        // 10 * 50 = 500, overflows i8.
+        assert_eq!(m_strong.pow(50), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_pow_zero_yields_dimensionless() {
+        let kg = Dimension([0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(kg.pow(0).unwrap(), Dimension::ZERO);
+    }
+
+    #[test]
+    fn dimension_pow_negative_works() {
+        let s = Dimension([0, 0, 1, 0, 0, 0, 0]);
+        // s ^ -2 = [0, 0, -2, 0, 0, 0, 0] (e.g. acceleration unit denominator)
+        assert_eq!(s.pow(-2).unwrap(), Dimension([0, 0, -2, 0, 0, 0, 0]));
     }
 }
