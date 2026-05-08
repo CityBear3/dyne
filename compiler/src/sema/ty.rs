@@ -229,6 +229,13 @@ pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnosti
     match &u.kind {
         UnitExprKind::Atom(name) => UnitRegistry::lookup(name).unwrap_or_else(|| {
             let new_diag = diag::unknown_unit(u.span, name);
+            // O(n) scan over already-emitted diags. Realistic compile
+            // produces O(10) diags total, so the scan is negligible
+            // compared to allocation. If diag piles ever grow large
+            // (e.g. tens of thousands of unit annotations in one
+            // module), hoist a `HashSet<String>` to `check()` and
+            // thread it through `lower_type` / `eval_unit_expr` for
+            // O(1) lookup; that refactor is intentionally deferred.
             if !diags.iter().any(|d| d.message == new_diag.message) {
                 diags.push(new_diag);
             }
@@ -814,6 +821,38 @@ mod tests {
     }
 
     #[test]
+    fn lower_scalar_with_two_args_emits_arity_error() {
+        // `Scalar<kg, extra>` — the parser accepts two type args but
+        // lower_scalar's match falls through to the "at most one unit
+        // argument" arm. Pin the diag so a future arity refactor
+        // doesn't silently lose this rejection.
+        let (ty, diags) = lower_first_let_ty("let x: Scalar<kg, extra> = 0.0");
+        assert_eq!(ty, Ty::Error);
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0].message.contains("at most one unit argument"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn lower_vec_with_three_args_emits_arity_error() {
+        // `Vec<3, kg, extra>` — `lower_vec` accepts at most a size and
+        // an optional unit; a third arg triggers the explicit arity arm.
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3, kg, extra> = 0");
+        assert_eq!(ty, Ty::Error);
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        assert!(
+            diags[0]
+                .message
+                .contains("at most a size and an optional unit argument"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
     fn lower_scalar_with_distinct_unknown_units_each_reported() {
         // Different unknown names must each surface separately —
         // the dedup is name-scoped, not blanket-suppressed.
@@ -839,10 +878,13 @@ mod tests {
         // (debug build) or silently lower to ZERO (release).
         let (ty, diags) = lower_first_let_ty("let v: Vec<3, Vec<3>> = 0");
         assert_eq!(ty, Ty::Error);
+        // Pin both count (no cascade) and content so a future change
+        // to lowering can't silently emit extra diags through this path.
+        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
         assert!(
-            diags.iter().any(|d| d.message.contains("unit expression")),
-            "expected unit-expression diag, got: {:?}",
-            diags
+            diags[0].message.contains("unit expression"),
+            "msg: {}",
+            diags[0].message
         );
     }
 
@@ -1058,6 +1100,34 @@ mod tests {
     }
 
     #[test]
+    fn dimension_pow_at_i8_max_boundary_succeeds() {
+        // 1 * 127 = 127 — exactly i8::MAX, no overflow.
+        let unit = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(unit.pow(127).unwrap(), Dimension([127, 0, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn dimension_pow_overflows_just_above_max() {
+        // 2 * 127 = 254 — overflows i8::MAX (127).
+        let two = Dimension([2, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(two.pow(127), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_pow_at_i8_min_boundary_succeeds() {
+        // 1 * -128 = -128 — exactly i8::MIN, no underflow.
+        let unit = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(unit.pow(-128).unwrap(), Dimension([-128, 0, 0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn dimension_pow_underflows_just_below_min() {
+        // 2 * -128 = -256 — underflows i8::MIN (-128).
+        let two = Dimension([2, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(two.pow(-128), Err(OverflowError));
+    }
+
+    #[test]
     fn format_si_dimensionless_is_one() {
         assert_eq!(Dimension::ZERO.format_si(), "1");
     }
@@ -1099,6 +1169,16 @@ mod tests {
         // m^2 / s = [2, 0, -1, 0, 0, 0, 0] — kg, A, K, mol, cd zero exponents skipped.
         let acc_like = Dimension([2, 0, -1, 0, 0, 0, 0]);
         assert_eq!(acc_like.format_si(), "m^2*s^-1");
+    }
+
+    #[test]
+    fn format_si_renders_all_base_names() {
+        // Every base exponent = 1 — pins the BASE_NAMES order plus
+        // confirms all 7 base names render. Covers the order the unit
+        // algebra walks (m, kg, s, A, K, mol, cd) in one assertion so
+        // a typo in BASE_NAMES surfaces immediately.
+        let all_ones = Dimension([1, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(all_ones.format_si(), "m*kg*s*A*K*mol*cd");
     }
 
     #[test]
