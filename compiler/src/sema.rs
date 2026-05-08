@@ -629,17 +629,89 @@ mod tests {
 
     #[test]
     fn signature_pass_outer_enum_first_writer_wins() {
-        // Two enums with the same name: resolver's `define_or_report` fires
-        // exactly one `duplicate_name` diagnostic and skips the second.
-        // signature_pass's outer-enum gate must NOT add a cascade.
+        // Pin the `enums_lowered` outer-enum gate (sema.rs ~227) by
+        // inspecting `variant_payloads` directly after `signature_pass`
+        // runs. The previous version of this test only asserted
+        // `diags.len() == 1`, which the resolver's `duplicate_name`
+        // diagnostic satisfies on its own — so the test would still
+        // pass even if the gate were removed (false-positive guard).
+        //
+        // Calling `check()` here is unsuitable because it returns
+        // `Err(diags)` when any diagnostic exists, leaving no handle on
+        // the partial tables. We invoke the resolver and
+        // `signature_pass` directly so the gate's *effect* on the
+        // payload map is observable.
+        //
+        // Expected gate behavior:
+        //   - The FIRST enum's variant `A` is in `variant_payloads`.
+        //   - The SECOND enum's variant `B` is NOT in `variant_payloads`
+        //     — `enums_lowered.insert` returns false on the duplicate
+        //     parent DefId, so the inner variant loop is skipped
+        //     entirely.
+        //   - `signature_pass` adds zero cascade diagnostics on top of
+        //     the resolver's single `duplicate_name`.
         let prog = parse_src("enum E\n  A\nend\nenum E\n  B\nend");
-        let result = check(prog);
-        let diags = result.unwrap_err();
-        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
+        let (resolutions, definitions, binding_def_ids, mut diags) =
+            resolve::resolve_program(&prog);
+        let resolver_diag_count = diags.len();
+        assert_eq!(
+            resolver_diag_count, 1,
+            "resolver should fire exactly one duplicate-name diag, got: {:?}",
+            diags
+        );
         assert!(
             diags[0].message.contains("already defined") || diags[0].message.contains("duplicate"),
-            "msg: {}",
+            "resolver diag msg: {}",
             diags[0].message
+        );
+
+        let (_def_types, _struct_fields, variant_payloads) = signature_pass(
+            &prog,
+            &resolutions,
+            &definitions,
+            &binding_def_ids,
+            &mut diags,
+        );
+
+        // No-cascade: signature_pass must not push additional diags on
+        // top of the resolver's report.
+        assert_eq!(
+            diags.len(),
+            resolver_diag_count,
+            "signature_pass added {} cascade diag(s) over the resolver's: {:?}",
+            diags.len() - resolver_diag_count,
+            diags
+        );
+
+        // First enum's variant A has a payload entry.
+        let a_def = definitions
+            .iter()
+            .find(|(_, info)| info.name == "A" && matches!(info.kind, DefKind::EnumVariant))
+            .map(|(id, _)| *id)
+            .expect("first enum's variant A must have a DefId");
+        assert!(
+            variant_payloads.contains_key(&a_def),
+            "first enum's variant A must be lowered into variant_payloads"
+        );
+
+        // Second enum's variant B (if the resolver gave it a distinct
+        // DefId) must NOT have a payload entry — that is precisely what
+        // the outer-enum gate guarantees. If the gate were removed,
+        // signature_pass would re-process the duplicate enum's body and
+        // insert B under the FIRST enum's parent DefId, corrupting the
+        // first-writer-wins invariant.
+        let b_def = definitions
+            .iter()
+            .find(|(_, info)| info.name == "B" && matches!(info.kind, DefKind::EnumVariant))
+            .map(|(id, _)| *id)
+            .expect(
+                "second enum's variant B must have a DefId — without one, this test cannot \
+                 distinguish gate-on from gate-off",
+            );
+        assert!(
+            !variant_payloads.contains_key(&b_def),
+            "outer-enum gate must skip the duplicate enum's body — \
+             variant B should NOT appear in variant_payloads"
         );
     }
 
