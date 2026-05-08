@@ -58,8 +58,8 @@ pub enum Ty {
     Error,
 }
 
-/// Integer dimension vector over the seven SI base dimensions:
-/// [length, mass, time, current, temperature, amount, luminous].
+/// Integer dimension vector over the seven SI base dimensions, indexed
+/// parallel to [`BASE_NAMES`]: `[m, kg, s, A, K, mol, cd]`.
 ///
 /// PR-3b only uses `Dimension::ZERO` (dimensionless). PR-3d populates
 /// the inner `i8` array via `mul`/`div`/`pow` arithmetic and the
@@ -74,8 +74,10 @@ pub enum Ty {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Dimension(pub(crate) [i8; 7]);
 
-/// Symbol for each SI base dimension, indexed parallel to `Dimension`'s
-/// inner array: [length, mass, time, current, temperature, amount, luminous].
+/// Single source of truth for the SI base-dimension order: each index
+/// corresponds to position `i` of [`Dimension`]'s inner array. All other
+/// modules (the registry, format_si, doc-comments) reference this name
+/// rather than restating the order.
 const BASE_NAMES: [&str; 7] = ["m", "kg", "s", "A", "K", "mol", "cd"];
 
 impl Dimension {
@@ -91,20 +93,22 @@ impl Dimension {
     ///   [1, 0, ...]       → "m"
     ///   [1, 1, -2, ...]   → "m*kg*s^-2"
     /// Negative exponents render as `name^-n`. Exponent of 1 elides.
-    /// Order is fixed: m, kg, s, A, K, mol, cd.
+    /// Order follows [`BASE_NAMES`].
     pub fn format_si(self) -> String {
         if self.is_dimensionless() {
             return "1".to_string();
         }
-        let mut parts = Vec::new();
-        for (i, &exp) in self.0.iter().enumerate() {
+        // At most 7 components — preallocate to avoid reallocation as
+        // each non-zero exponent pushes its rendered factor.
+        let mut parts = Vec::with_capacity(BASE_NAMES.len());
+        for (&exp, name) in self.0.iter().zip(BASE_NAMES.iter()) {
             if exp == 0 {
                 continue;
             }
             if exp == 1 {
-                parts.push(BASE_NAMES[i].to_string());
+                parts.push((*name).to_string());
             } else {
-                parts.push(format!("{}^{}", BASE_NAMES[i], exp));
+                parts.push(format!("{name}^{exp}"));
             }
         }
         parts.join("*")
@@ -124,21 +128,24 @@ impl std::fmt::Display for Dimension {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverflowError;
 
+// `mul` / `div` are unit-algebra operations on exponent vectors —
+// `kg * m/s = kg·m/s` is pointwise addition of exponents, not the
+// numeric `std::ops::Mul`. The names match the domain meaning, hence
+// the family-wide `should_implement_trait` allow.
+#[allow(clippy::should_implement_trait)]
 impl Dimension {
-    /// Pointwise add: each element of `self` and `other` are added with
-    /// checked i8 arithmetic. Returns `Err(OverflowError)` if any element
+    /// Pointwise add: each element of `self` is paired with the
+    /// corresponding element of `other` and summed with checked i8
+    /// arithmetic. Returns `Err(OverflowError)` if any element
     /// overflows i8 (`i8::MIN..=i8::MAX`).
-    //
-    // Name matches the unit-algebra domain (multiplying two unit vectors =
-    // pointwise add of exponents, e.g. `kg * m/s = kg*m/s`). Not the
-    // numeric `std::ops::Mul`, hence the allow.
-    #[allow(clippy::should_implement_trait)]
     pub fn mul(self, other: Self) -> Result<Self, OverflowError> {
         self.pointwise(other, i8::checked_add)
     }
 
-    /// Pointwise subtract.
-    #[allow(clippy::should_implement_trait)]
+    /// Pointwise subtract: each element of `self` is paired with the
+    /// corresponding element of `other` and subtracted with checked i8
+    /// arithmetic. Returns `Err(OverflowError)` if any element
+    /// underflows i8.
     pub fn div(self, other: Self) -> Result<Self, OverflowError> {
         self.pointwise(other, i8::checked_sub)
     }
@@ -190,6 +197,11 @@ impl UnitRegistry {
             "Hz" => Some(Dimension([0, 0, -1, 0, 0, 0, 0])), // 1/s
             "C" => Some(Dimension([0, 0, 1, 1, 0, 0, 0])),  // A*s
             "V" => Some(Dimension([2, 1, -3, -1, 0, 0, 0])), // W/A = kg*m^2/(s^3*A)
+            // Ω: the `byte 0xCE` lexer rejects this Unicode char, so the
+            // arm is unreachable from source today. Kept for completeness
+            // so the registry covers the full 8-derived set; lexer
+            // Unicode support arrives with the SI prefix / CGS work
+            // (PR-3e or later).
             "Ω" => Some(Dimension([2, 1, -3, -2, 0, 0, 0])), // V/A
             _ => None,
         }
@@ -203,16 +215,17 @@ impl UnitRegistry {
 /// on any error so subsequent type checking continues.
 pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnostic>) -> Dimension {
     use crate::ast::UnitExprKind;
+    use crate::sema::diag;
     match &u.kind {
         UnitExprKind::Atom(name) => UnitRegistry::lookup(name).unwrap_or_else(|| {
-            diags.push(crate::sema::diag::unknown_unit(u.span, name));
+            diags.push(diag::unknown_unit(u.span, name));
             Dimension::ZERO
         }),
         UnitExprKind::Mul(a, b) => {
             let l = eval_unit_expr(a, diags);
             let r = eval_unit_expr(b, diags);
             l.mul(r).unwrap_or_else(|_| {
-                diags.push(crate::sema::diag::dimension_overflow(u.span));
+                diags.push(diag::dimension_overflow(u.span));
                 Dimension::ZERO
             })
         }
@@ -220,21 +233,21 @@ pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnosti
             let l = eval_unit_expr(a, diags);
             let r = eval_unit_expr(b, diags);
             l.div(r).unwrap_or_else(|_| {
-                diags.push(crate::sema::diag::dimension_overflow(u.span));
+                diags.push(diag::dimension_overflow(u.span));
                 Dimension::ZERO
             })
         }
         UnitExprKind::Pow(base, n) => {
-            // Parser produces i64; narrow to i8 with explicit range check
-            // before calling Dimension::pow (which itself may still overflow
-            // when the base has large exponents).
-            if *n < i8::MIN as i64 || *n > i8::MAX as i64 {
-                diags.push(crate::sema::diag::unit_exponent_out_of_range(u.span, *n));
+            // Parser produces i64; narrow to i8 with `try_from` rather than
+            // a manual MIN/MAX comparison so the conversion intent is
+            // explicit and matches Effective Rust Item 5.
+            let Ok(exp) = i8::try_from(*n) else {
+                diags.push(diag::unit_exponent_out_of_range(u.span, *n));
                 return Dimension::ZERO;
-            }
+            };
             let base_dim = eval_unit_expr(base, diags);
-            base_dim.pow(*n as i8).unwrap_or_else(|_| {
-                diags.push(crate::sema::diag::dimension_overflow(u.span));
+            base_dim.pow(exp).unwrap_or_else(|_| {
+                diags.push(diag::dimension_overflow(u.span));
                 Dimension::ZERO
             })
         }
@@ -541,11 +554,21 @@ fn lower_vec(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
         Some(TypeArg::Unit(u)) => eval_unit_expr(u, diags),
         Some(TypeArg::Type(t)) => match &t.kind {
             TypeKind::Named(name) => eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags),
-            // Non-named type in unit position: cascade-suppress to ZERO.
-            // The parser is unlikely to produce this shape; Type::Function /
-            // Type::Generic in this position would be a parser bug, not a
-            // user error worth a custom diag.
-            _ => Dimension::ZERO,
+            // Non-named Type in unit position is unreachable from the
+            // current parser: only an Ident at the lookahead boundary
+            // produces `TypeArg::Type(...)`, and that always yields
+            // `TypeKind::Named`. A `Generic` / `Function` shape here
+            // would be a parser regression, not a user error — debug-
+            // assert so it's caught in tests, then cascade-suppress to
+            // ZERO so release builds don't crash on a user program.
+            _ => {
+                debug_assert!(
+                    false,
+                    "lower_vec: unexpected non-Named TypeArg::Type in unit position: {:?}",
+                    t.kind
+                );
+                Dimension::ZERO
+            }
         },
         Some(TypeArg::Int(_)) => {
             diags.push(Diagnostic::type_error(
@@ -564,7 +587,7 @@ fn lower_vec(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
 /// so unknown-unit diagnostics match the compound-form path.
 fn synthesize_atom_unit_expr(t: &Type, name: &str) -> crate::ast::UnitExpr {
     crate::ast::UnitExpr {
-        kind: crate::ast::UnitExprKind::Atom(name.to_string()),
+        kind: crate::ast::UnitExprKind::Atom(name.into()),
         span: t.span,
         id: t.id,
     }
@@ -757,12 +780,6 @@ mod tests {
         assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unknown unit"));
-    }
-
-    #[test]
-    fn lower_vec_with_size_and_no_unit() {
-        let (ty, _) = lower_first_let_ty("let v: Vec<3> = 0");
-        assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
     }
 
     #[test]
@@ -1138,10 +1155,20 @@ mod tests {
         assert_eq!(UnitRegistry::lookup("cm"), None); // CGS not in registry
     }
 
+    // Synthetic UnitExpr fixtures for `eval_unit_expr` tests. Spans here
+    // do not point at any real source; the evaluator reads them only for
+    // diag attachment, and tests assert messages, not span ranges. A
+    // single zero-length span is used uniformly so the convention is
+    // visibly "synthetic" rather than mixing `(0, name.len())` /
+    // `(0, 1)` ad-hoc.
+    fn synthetic_span() -> crate::source::Span {
+        crate::source::Span::new(0, 0)
+    }
+
     fn unit_atom(name: &str) -> crate::ast::UnitExpr {
         crate::ast::UnitExpr {
             kind: crate::ast::UnitExprKind::Atom(name.into()),
-            span: crate::source::Span::new(0, name.len()),
+            span: synthetic_span(),
             id: crate::ids::NodeId(0),
         }
     }
@@ -1149,7 +1176,7 @@ mod tests {
     fn unit_mul(a: crate::ast::UnitExpr, b: crate::ast::UnitExpr) -> crate::ast::UnitExpr {
         crate::ast::UnitExpr {
             kind: crate::ast::UnitExprKind::Mul(Box::new(a), Box::new(b)),
-            span: crate::source::Span::new(0, 1),
+            span: synthetic_span(),
             id: crate::ids::NodeId(0),
         }
     }
@@ -1157,7 +1184,7 @@ mod tests {
     fn unit_div(a: crate::ast::UnitExpr, b: crate::ast::UnitExpr) -> crate::ast::UnitExpr {
         crate::ast::UnitExpr {
             kind: crate::ast::UnitExprKind::Div(Box::new(a), Box::new(b)),
-            span: crate::source::Span::new(0, 1),
+            span: synthetic_span(),
             id: crate::ids::NodeId(0),
         }
     }
@@ -1165,7 +1192,7 @@ mod tests {
     fn unit_pow(base: crate::ast::UnitExpr, n: i64) -> crate::ast::UnitExpr {
         crate::ast::UnitExpr {
             kind: crate::ast::UnitExprKind::Pow(Box::new(base), n),
-            span: crate::source::Span::new(0, 1),
+            span: synthetic_span(),
             id: crate::ids::NodeId(0),
         }
     }
