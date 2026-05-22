@@ -9,3 +9,6 @@
 
 # Implementation plans (kept local, not published)
 /docs/plans/
+
+# IDE: JetBrains
+.idea/

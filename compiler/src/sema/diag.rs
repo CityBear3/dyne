@@ -186,6 +186,30 @@ pub fn requires_wildcard(span: Span, kind: &str) -> Diagnostic {
     )
 }
 
+/// Reported when a `Dimension` arithmetic operation overflows i8 element
+/// bounds during unit-expression evaluation. The site that detected the
+/// overflow substitutes `Dimension::ZERO` to suppress cascade.
+pub fn dimension_overflow(span: Span) -> Diagnostic {
+    Diagnostic::type_error(span, "dimension component overflow in unit expression")
+}
+
+/// Reported when a unit exponent literal is outside the valid i8 range
+/// `[-128, 127]`. Realistic physics exponents fit in ±8; values outside
+/// this range are almost certainly typos or computation errors.
+pub fn unit_exponent_out_of_range(span: Span, n: i64) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("unit exponent {n} out of valid range [-128, 127]"),
+    )
+}
+
+/// Reported when a unit atom name is not in the built-in registry.
+/// Per PR-3d-α scope (Q3), only SI base 7 + 8 derived units are
+/// recognized. SI prefixes / CGS / user-defined units are deferred.
+pub fn unknown_unit(span: Span, name: &str) -> Diagnostic {
+    Diagnostic::type_error(span, format!("unknown unit `{name}`"))
+}
+
 /// Render a `Ty` for diagnostic messages. PR-3b uses base names; PR-3d's
 /// `Dimension::format_si` integrates here once units are implemented.
 fn format_ty(ty: &Ty) -> String {

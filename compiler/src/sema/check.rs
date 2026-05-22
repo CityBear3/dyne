@@ -464,16 +464,22 @@ impl<'a> TypeChecker<'a> {
 
     /// Pow: base must be `Int` / `Scalar` / `Vec` / `Mat`; exponent must
     /// be `Int`. Vec/Mat semantics (element-wise vs. linear-algebra power)
-    /// land in PR-3d; here we mirror `synth_arith` and return the input
-    /// shape so cross-context mismatch unifications still fire.
+    /// land in PR-3d-β.
+    ///
+    /// Slice boundary: we strip dim across both Scalar and Vec arms here
+    /// so the operator-side is uniform (`synth_pow` returns `ZERO` for
+    /// every shape that can carry a dim). `synth_arith`'s Vec/Mat arm is
+    /// asymmetric — it preserves the operand's `Dimension` because Vec
+    /// arithmetic in α is a non-Error placeholder for cross-context
+    /// unification (β re-routes it through unify with real propagation).
+    /// Preserving the input dim *here* would leak it into return-type
+    /// unify and surface a confused "expected `Scalar`, found `Scalar`"
+    /// diag once PR-3d-α annotations carry real dims.
     fn synth_pow(&mut self, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
         let result = match l {
             Ty::Int => Ty::Int,
-            Ty::Scalar(d) => Ty::Scalar(*d),
-            // Vec/Mat power is not yet decided semantically; PR-3d picks
-            // the rule. Until then return the input shape so unification
-            // produces accurate diagnostics rather than silent swallow.
-            Ty::Vec(n, d) => Ty::Vec(*n, *d),
+            Ty::Scalar(_) => Ty::Scalar(Dimension::ZERO),
+            Ty::Vec(n, _) => Ty::Vec(*n, Dimension::ZERO),
             Ty::Mat(m, n) => Ty::Mat(*m, *n),
             _ => Ty::Error,
         };

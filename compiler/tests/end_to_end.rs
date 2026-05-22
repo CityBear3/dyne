@@ -68,9 +68,19 @@ end
 
 #[test]
 fn units_in_type_annotation() {
+    // PR-3d-α: `Scalar<kg>` annotation now carries a real `kg` dimension
+    // (was `Dimension::ZERO` placeholder pre-3d). The `1.5` literal is
+    // dimensionless, so the let-binding unify fails — explicit literal→
+    // unit coercion is reserved to PR-3d-β / spec §3 ("conversion to a
+    // unit-annotated `Scalar` requires explicit handling"). The pre-3d
+    // version of this test passed only because both sides lowered to
+    // `Dimension::ZERO`, masking the mismatch.
     let src = "let mass: Scalar<kg> = 1.5";
-    let p = compile(src).unwrap().program;
-    assert_eq!(p.items.len(), 1);
+    let err = compile(src).unwrap_err();
+    assert!(
+        err.iter().any(|d| d.message.contains("mismatch")),
+        "expected a type-mismatch diag, got: {err:?}"
+    );
 }
 
 #[test]
@@ -411,5 +421,132 @@ fn compile_user_redeclares_builtin_option_yields_diag() {
             .any(|d| d.message.contains("`Option`") && d.message.contains("already defined")),
         "expected duplicate-name diag for Option, got: {:?}",
         diags
+    );
+}
+
+// PR-3d-α slice promise: annotations now carry real `Dimension` values
+// end-to-end. Tests that need to inspect `Dimension` values live inside
+// the crate (`compiler/src/sema.rs::tests`), since `Dimension`'s inner
+// array is intentionally private (future migration to rational exponents
+// is module-local). The two black-box tests below verify externally
+// observable behavior — diagnostic surfacing and the slice boundary —
+// without needing private constructors.
+
+#[test]
+fn compile_unknown_unit_in_annotation_fires_diag() {
+    let src = "function f(): Scalar<xyzzy>\n  return 1.0\nend";
+    let result = dyne::compile(src);
+    assert!(result.is_err(), "expected compile error for unknown unit");
+    let diags = result.unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("unknown unit") && d.message.contains("xyzzy")),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_unknown_unit_repeated_in_signature_dedups() {
+    // A typo'd unit reused across param + return slots in the same
+    // signature lowers to multiple eval_unit_expr calls into the same
+    // diags vec; dedup must collapse them to a single diag.
+    let src = "function f(x: Scalar<xyz>): Scalar<xyz>\n  return x\nend";
+    let result = dyne::compile(src);
+    assert!(result.is_err());
+    let diags = result.unwrap_err();
+    let xyz_count = diags
+        .iter()
+        .filter(|d| d.message.contains("unknown unit") && d.message.contains("xyz"))
+        .count();
+    assert_eq!(xyz_count, 1, "expected one xyz diag, got: {diags:?}");
+}
+
+#[test]
+fn compile_unknown_unit_repeated_across_params_dedups() {
+    // Three params with the same typo'd unit: the same dedup as above,
+    // exercised at higher cardinality.
+    let src = "\
+function f(a: Scalar<xyz>, b: Scalar<xyz>, c: Scalar<xyz>): Scalar
+  return 0.0
+end";
+    let result = dyne::compile(src);
+    assert!(result.is_err());
+    let diags = result.unwrap_err();
+    let xyz_count = diags
+        .iter()
+        .filter(|d| d.message.contains("unknown unit") && d.message.contains("xyz"))
+        .count();
+    assert_eq!(xyz_count, 1, "expected one xyz diag, got: {diags:?}");
+}
+
+#[test]
+fn compile_operator_side_zero_behavior_unchanged() {
+    // Slice-boundary pin: arithmetic and `^` on dim-carrying Scalars
+    // *would* be a dim-mismatch / dim-propagation once PR-3d-β replaces
+    // the operator-side ZERO drop with real propagation. In PR-3d-α we
+    // still accept these because the operator path strips dim before
+    // unify ever sees the disagreement; both functions return
+    // dimensionless `Scalar`, which matches the ZERO output.
+    //
+    // Params (rather than let-bindings) are used so the test exercises
+    // pure operator behavior without tripping the literal→unit coercion
+    // gap (deferred to PR-3d-β; tests like
+    // `units_in_type_annotation` document that gap separately).
+    //
+    // When PR-3d-β lands operator dim propagation, both cases flip: the
+    // assertions become `result.is_err()` with `dimension_mismatch`
+    // (for `+`) and propagated-dim mismatch (for `^`).
+
+    // `+` arm: kg + m with dimensionless return.
+    let plus_src = "\
+function f(x: Scalar<kg>, y: Scalar<m>): Scalar
+  return x + y
+end";
+    let plus = dyne::compile(plus_src);
+    assert!(
+        plus.is_ok(),
+        "PR-3d-α should still accept dim-mixing under `+` (β handles the diag); diags: {:?}",
+        plus.err()
+    );
+
+    // `^` arm: kg ^ 2 with dimensionless return. synth_pow must strip
+    // the input dim (matching synth_arith) so the return-type unify
+    // sees `Scalar` ↔ `Scalar(ZERO)` rather than `Scalar` ↔ `Scalar(kg)`.
+    let pow_src = "\
+function g(x: Scalar<kg>): Scalar
+  return x ^ 2
+end";
+    let pow = dyne::compile(pow_src);
+    assert!(
+        pow.is_ok(),
+        "PR-3d-α should still accept `^` on dim-carrying Scalars (β handles propagation); diags: {:?}",
+        pow.err()
+    );
+}
+
+#[test]
+fn compile_vec_dim_mixing_zero_behavior_unchanged() {
+    // Slice-boundary pin (CQ-IMP1): the Vec arm of `synth_arith`
+    // (compiler/src/sema/check.rs Vec/Vec arm) is a separate code
+    // path from the Scalar arm. PR-3d-α picks the LEFT operand's
+    // dim (so `Vec<3, kg> + Vec<3, m>` returns `Vec<3, kg>`, which
+    // unifies cleanly against an annotated `Vec<3, kg>` return).
+    //
+    // PR-3d-β must flip BOTH the Scalar arm AND the Vec arm. This
+    // test pins the Vec arm so a partial β migration (Scalar flipped
+    // but Vec not) is loudly detectable.
+    //
+    // When PR-3d-β lands, this assertion becomes `result.is_err()`
+    // with `dimension_mismatch`.
+    let src = "\
+function f(x: Vec<3, kg>, y: Vec<3, m>): Vec<3, kg>
+  return x + y
+end";
+    let result = dyne::compile(src);
+    assert!(
+        result.is_ok(),
+        "PR-3d-α should still accept dim-mixing under Vec `+` (β handles the diag); diags: {:?}",
+        result.err()
     );
 }

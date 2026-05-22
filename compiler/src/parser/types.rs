@@ -162,7 +162,8 @@ fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
         id: p.fresh_node_id(),
     };
     if p.eat(&TokenKind::Caret) {
-        let n = match p.peek_kind() {
+        let neg = p.eat(&TokenKind::Minus);
+        let n_unsigned = match p.peek_kind() {
             TokenKind::Int(n) => *n,
             other => {
                 return Err(Diagnostic::parse_error(
@@ -172,6 +173,7 @@ fn parse_unit_factor(p: &mut Parser) -> Result<UnitExpr, Diagnostic> {
             }
         };
         let exp_span = p.advance().span;
+        let n = if neg { -n_unsigned } else { n_unsigned };
         let span = Span::merge(expr.span, exp_span);
         expr = UnitExpr {
             kind: UnitExprKind::Pow(Box::new(expr), n),
@@ -286,5 +288,42 @@ mod tests {
         } else {
             panic!("expected Function");
         }
+    }
+
+    #[test]
+    fn unit_factor_accepts_negative_exponent() {
+        // `Scalar<s^-2>`: parser must accept negative integer exponent.
+        let t = parse("Scalar<s^-2>");
+        if let TypeKind::Generic(_, args) = t.kind {
+            assert_eq!(args.len(), 1);
+            if let TypeArg::Unit(u) = &args[0] {
+                if let UnitExprKind::Pow(base, exp) = &u.kind {
+                    assert!(matches!(&base.kind, UnitExprKind::Atom(s) if s == "s"));
+                    assert_eq!(*exp, -2);
+                } else {
+                    panic!("expected Pow, got {:?}", u.kind);
+                }
+            } else {
+                panic!("expected TypeArg::Unit, got {:?}", args[0]);
+            }
+        } else {
+            panic!("expected Generic Scalar, got {:?}", t.kind);
+        }
+    }
+
+    #[test]
+    fn unit_factor_accepts_positive_exponent_regression() {
+        // Regression: positive-exponent path (`s^2`) must continue to work.
+        let t = parse("Scalar<s^2>");
+        let TypeKind::Generic(_, args) = t.kind else {
+            panic!("expected Generic Scalar, got {:?}", t.kind);
+        };
+        let TypeArg::Unit(u) = &args[0] else {
+            panic!("expected TypeArg::Unit, got {:?}", args[0]);
+        };
+        let UnitExprKind::Pow(_, exp) = &u.kind else {
+            panic!("expected Pow, got {:?}", u.kind);
+        };
+        assert_eq!(*exp, 2);
     }
 }
