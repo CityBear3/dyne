@@ -280,18 +280,21 @@ mod tests {
     use crate::sema::ty::{Dimension, Ty};
     use crate::source::Span;
 
+    // These pin the FULL rendered message (not loose `contains`) so the
+    // format_si unit integration introduced here can't silently regress:
+    // a change dropping units from `format_ty` (e.g. back to bare
+    // `Scalar` / `Vec<3>`) would still pass a `contains("Vec")`-style
+    // check but fails these exact-match assertions.
+
     #[test]
     fn dimension_mismatch_scalar_add_kg_vs_m() {
         let lhs = Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
         let rhs = Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0])); // m
         let diag = dimension_mismatch(Span::new(0, 5), "+", &lhs, &rhs);
-        assert!(diag.message.contains("dimension mismatch in '+'"));
-        assert!(diag.message.contains("left side has"));
-        assert!(diag.message.contains("right side has"));
-        // format_ty for a dim-carrying Scalar renders "Scalar<kg>" /
-        // "Scalar<m>" — verify both sides surface in the message.
-        assert!(diag.message.contains("kg"), "msg: {}", diag.message);
-        assert!(diag.message.contains('m'), "msg: {}", diag.message);
+        assert_eq!(
+            diag.message,
+            "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
+        );
     }
 
     #[test]
@@ -299,8 +302,10 @@ mod tests {
         let lhs = Ty::Vec(3, Dimension([1, 0, 0, 0, 0, 0, 0])); // m
         let rhs = Ty::Vec(3, Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
         let diag = dimension_mismatch(Span::new(0, 5), "-", &lhs, &rhs);
-        assert!(diag.message.contains("'-'"));
-        assert!(diag.message.contains("Vec"));
+        assert_eq!(
+            diag.message,
+            "dimension mismatch in '-': left side has Vec<3, m>, but right side has Vec<3, kg>"
+        );
     }
 
     #[test]
@@ -308,7 +313,9 @@ mod tests {
         let lhs = Ty::Mat(3, 3);
         let rhs = Ty::Scalar(Dimension([1, 0, -1, 0, 0, 0, 0])); // m/s
         let diag = dimension_mismatch(Span::new(0, 5), "*", &lhs, &rhs);
-        assert!(diag.message.contains("'*'"));
-        assert!(diag.message.contains("Mat"));
+        assert_eq!(
+            diag.message,
+            "dimension mismatch in '*': left side has Mat<3, 3>, but right side has Scalar<m*s^-1>"
+        );
     }
 }
