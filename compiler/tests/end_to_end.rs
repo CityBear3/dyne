@@ -481,38 +481,34 @@ end";
 }
 
 #[test]
-fn compile_operator_side_zero_behavior_unchanged() {
-    // Slice-boundary pin: arithmetic and `^` on dim-carrying Scalars
-    // *would* be a dim-mismatch / dim-propagation once PR-3d-β replaces
-    // the operator-side ZERO drop with real propagation. In PR-3d-α we
-    // still accept these because the operator path strips dim before
-    // unify ever sees the disagreement; both functions return
-    // dimensionless `Scalar`, which matches the ZERO output.
+fn compile_operator_arith_dim_propagation_partial_after_task2() {
+    // Slice-boundary pin, mid-β. PR-3d-β Task 2 lands real Scalar `+`/`-`
+    // dimension checking, so the `+` arm now FLIPS from α's accept-via-ZERO
+    // to a `dimension_mismatch` error. The `^` arm has NOT flipped yet:
+    // `synth_pow`'s rewrite is Task 5, so `kg ^ 2` still strips dim to
+    // `Scalar(ZERO)` and unifies cleanly against the dimensionless return.
+    // Task 5 flips the `^` arm; Task 7 supersedes this with full operator
+    // e2e coverage.
     //
-    // Params (rather than let-bindings) are used so the test exercises
-    // pure operator behavior without tripping the literal→unit coercion
-    // gap (deferred to PR-3d-β; tests like
-    // `units_in_type_annotation` document that gap separately).
-    //
-    // When PR-3d-β lands operator dim propagation, both cases flip: the
-    // assertions become `result.is_err()` with `dimension_mismatch`
-    // (for `+`) and propagated-dim mismatch (for `^`).
+    // Params (rather than let-bindings) keep the test on pure operator
+    // behavior without tripping the literal→unit coercion gap (Task 10).
 
-    // `+` arm: kg + m with dimensionless return.
+    // `+` arm: kg + m → dimension_mismatch (Task 2, Q4 Add/Sub equal-dim).
     let plus_src = "\
 function f(x: Scalar<kg>, y: Scalar<m>): Scalar
   return x + y
 end";
     let plus = dyne::compile(plus_src);
+    let plus_diags = plus.expect_err("kg + m must now be a dimension mismatch");
     assert!(
-        plus.is_ok(),
-        "PR-3d-α should still accept dim-mixing under `+` (β handles the diag); diags: {:?}",
-        plus.err()
+        plus_diags
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in '+'")),
+        "diags: {plus_diags:?}"
     );
 
-    // `^` arm: kg ^ 2 with dimensionless return. synth_pow must strip
-    // the input dim (matching synth_arith) so the return-type unify
-    // sees `Scalar` ↔ `Scalar(ZERO)` rather than `Scalar` ↔ `Scalar(kg)`.
+    // `^` arm: kg ^ 2 with dimensionless return — still accepted until the
+    // Task 5 synth_pow rewrite (input dim stripped to ZERO).
     let pow_src = "\
 function g(x: Scalar<kg>): Scalar
   return x ^ 2
@@ -520,7 +516,7 @@ end";
     let pow = dyne::compile(pow_src);
     assert!(
         pow.is_ok(),
-        "PR-3d-α should still accept `^` on dim-carrying Scalars (β handles propagation); diags: {:?}",
+        "`^` dim propagation lands in Task 5; α-style ZERO-strip still applies here; diags: {:?}",
         pow.err()
     );
 }

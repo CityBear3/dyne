@@ -253,7 +253,9 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         }
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => self.synth_arith(&lt, &rt, l.span),
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                self.synth_arith(op, &lt, &rt, l.span)
+            }
             BinOp::Pow => self.synth_pow(&lt, &rt, l.span, r.span),
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                 self.synth_comparison(&lt, &rt, l.span)
@@ -433,25 +435,75 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Arithmetic on `Int` / `Scalar` / `Vec` / `Mat`. The Vec/Mat result
-    /// type is approximate (true unit propagation lands in PR-3d under
-    /// Option β); returning a Vec/Mat shape rather than `Ty::Error` lets
-    /// cross-context unification surface accurate diagnostics rather than
-    /// silently swallowing them.
-    fn synth_arith(&mut self, l: &Ty, r: &Ty, l_span: Span) -> Ty {
-        match (l, r) {
-            (Ty::Int, Ty::Int) => Ty::Int,
-            (Ty::Int, Ty::Scalar(d)) | (Ty::Scalar(d), Ty::Int) if d.is_dimensionless() => {
-                Ty::Scalar(Dimension::ZERO)
+    /// Arithmetic on `Int` / `Scalar` / `Vec` / `Mat`.
+    ///
+    /// Scalar/Int dimension propagation (Q4): `Int` promotes to a
+    /// dimensionless `Scalar` in mixed contexts; `+`/`-` require equal
+    /// dimensions (else `dimension_mismatch`); `*` / `/` compute
+    /// `d1.mul(d2)` / `d1.div(d2)` (overflow → `dimension_overflow`); pure
+    /// `Int op Int` stays `Int` (integer division for `/`, Q4-2).
+    ///
+    /// Vec/Mat operands keep the PR-3b/3c placeholder for now: the result
+    /// is the operand's shape (NOT `Ty::Error`) so cross-context
+    /// unification still surfaces accurate "expected T, found Vec/Mat"
+    /// diagnostics (pinned by `vec_add_in_int_context_emits_diag`). Real
+    /// Q5 / Q6 Vec / Mat rules replace these arms in Tasks 3-4.
+    fn synth_arith(&mut self, op: BinOp, l: &Ty, r: &Ty, l_span: Span) -> Ty {
+        // Q9 (CQ M4 from α /review): short-circuit on `Ty::Error` so a
+        // failed-lowering operand can't masquerade as a dimensionless
+        // `Scalar` and emit a misleading dimension_mismatch. `synth_binop`
+        // already guards this; the entry check keeps `synth_arith` correct
+        // for any caller, per Q9's "short-circuit at all synth_* entries".
+        if matches!(l, Ty::Error) || matches!(r, Ty::Error) {
+            return Ty::Error;
+        }
+
+        // Q4 Step 1: promote `Int` to dimensionless `Scalar` in mixed pairs.
+        let (l_eff, r_eff) = promote_int_to_scalar(l, r);
+
+        match (op, &l_eff, &r_eff) {
+            // Pure Int op Int → Int (integer division for `/`, Q4-2).
+            (_, Ty::Int, Ty::Int) => Ty::Int,
+
+            // Scalar +/- Scalar: dimensions must match (Q4 Step 2).
+            (BinOp::Add | BinOp::Sub, Ty::Scalar(d1), Ty::Scalar(d2)) => {
+                if d1 == d2 {
+                    Ty::Scalar(*d1)
+                } else {
+                    self.diagnostics.push(crate::sema::diag::dimension_mismatch(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
+                    Ty::Error
+                }
             }
-            (Ty::Scalar(_), Ty::Scalar(_)) => Ty::Scalar(Dimension::ZERO),
-            // Vec/Mat arithmetic: pick the Vec/Mat operand's shape so
-            // cross-context mismatch surfaces. Mat takes precedence over
-            // Vec when both are present (e.g. Mat·Vec → Mat-shaped is
-            // wrong but PR-3d will refine; for now we only need a
-            // non-Error type so unify_or_diag can fire).
-            (Ty::Mat(m, n), _) | (_, Ty::Mat(m, n)) => Ty::Mat(*m, *n),
-            (Ty::Vec(n, d), _) | (_, Ty::Vec(n, d)) => Ty::Vec(*n, *d),
+
+            // Scalar * Scalar / Scalar: dimension arithmetic.
+            (BinOp::Mul, Ty::Scalar(d1), Ty::Scalar(d2)) => match d1.mul(*d2) {
+                Ok(d) => Ty::Scalar(d),
+                Err(_) => {
+                    self.diagnostics
+                        .push(crate::sema::diag::dimension_overflow(l_span));
+                    Ty::Error
+                }
+            },
+            (BinOp::Div, Ty::Scalar(d1), Ty::Scalar(d2)) => match d1.div(*d2) {
+                Ok(d) => Ty::Scalar(d),
+                Err(_) => {
+                    self.diagnostics
+                        .push(crate::sema::diag::dimension_overflow(l_span));
+                    Ty::Error
+                }
+            },
+
+            // Vec/Mat: PR-3b/3c placeholder (shape preserved, dim passes
+            // through). Mat takes precedence over Vec when both appear.
+            // Replaced by real Q5/Q6 rules in Tasks 3-4.
+            (_, Ty::Mat(m, n), _) | (_, _, Ty::Mat(m, n)) => Ty::Mat(*m, *n),
+            (_, Ty::Vec(n, d), _) | (_, _, Ty::Vec(n, d)) => Ty::Vec(*n, *d),
+
             _ => {
                 self.diagnostics.push(crate::sema::diag::type_mismatch(
                     l_span,
@@ -976,6 +1028,39 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
+/// Q4 Step 1: in a mixed `Int` / `Scalar` binary op, the `Int` operand
+/// promotes to a dimensionless `Scalar` so the Scalar rules handle it
+/// uniformly. `Int + Scalar<kg>` thus becomes `Scalar + Scalar<kg>` →
+/// `dimension_mismatch` (Q4-1), while `Int + Scalar` (dimensionless)
+/// succeeds. Non-mixed pairs pass through unchanged.
+fn promote_int_to_scalar(l: &Ty, r: &Ty) -> (Ty, Ty) {
+    match (l, r) {
+        (Ty::Int, Ty::Scalar(_)) => (Ty::Scalar(Dimension::ZERO), r.clone()),
+        (Ty::Scalar(_), Ty::Int) => (l.clone(), Ty::Scalar(Dimension::ZERO)),
+        _ => (l.clone(), r.clone()),
+    }
+}
+
+/// Render a binary operator as its source symbol for operator-focus
+/// diagnostics (e.g. `dimension_mismatch`).
+fn op_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Pow => "^",
+        BinOp::Eq => "==",
+        BinOp::Neq => "!=",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::Le => "<=",
+        BinOp::Ge => ">=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+    }
+}
+
 pub(crate) fn run(
     program: &Program,
     resolutions: &ResolveTable,
@@ -1059,6 +1144,74 @@ mod tests {
     #[test]
     fn check_int_literal_against_scalar_zero_succeeds() {
         compile_src("let x: Scalar = 5");
+    }
+
+    // ----- PR-3d-β Task 2: synth_arith Scalar/Int dimension rules (Q4) -----
+    //
+    // Dim-carrying Scalars are supplied via function *parameters* (not
+    // `let a: Scalar<kg> = 1.0`) because literal-to-unit coercion is Task 10
+    // (executes after this task). Params give the operands their annotated
+    // dimension without tripping the deferred coercion gap — mirroring the
+    // α convention documented in sema.rs.
+
+    #[test]
+    fn arith_int_int_add_returns_int() {
+        compile_src("function f(): Int\n  return 1 + 2\nend");
+    }
+
+    #[test]
+    fn arith_scalar_kg_plus_scalar_kg_returns_scalar_kg() {
+        // Same dim → result Scalar<kg>, unifies with the declared return.
+        compile_src("function f(a: Scalar<kg>, b: Scalar<kg>): Scalar<kg>\n  return a + b\nend");
+    }
+
+    #[test]
+    fn arith_scalar_kg_plus_scalar_m_dim_mismatch_diag() {
+        let diags =
+            diags_for("function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(diags[0].message.contains("dimension mismatch in '+'"));
+        assert!(diags[0].message.contains("kg"));
+        assert!(diags[0].message.contains('m'));
+    }
+
+    #[test]
+    fn arith_int_plus_scalar_dimensionless_widens() {
+        // Int + Scalar(ZERO): Int promotes to Scalar(ZERO), ZERO == ZERO.
+        compile_src("function f(x: Scalar): Scalar\n  return 1 + x\nend");
+    }
+
+    #[test]
+    fn arith_int_plus_scalar_kg_dim_mismatch_diag() {
+        // Q4-1: Int promotes to Scalar(ZERO); ZERO != kg → dimension_mismatch.
+        let diags = diags_for("function f(x: Scalar<kg>): Scalar<kg>\n  return 1 + x\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(diags[0].message.contains("dimension mismatch in '+'"));
+    }
+
+    #[test]
+    fn arith_scalar_kg_mul_scalar_m_returns_kg_times_m() {
+        // d1.mul(d2): kg * m → kg*m.
+        compile_src("function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg*m>\n  return a * b\nend");
+    }
+
+    #[test]
+    fn arith_scalar_kg_div_scalar_s_returns_kg_per_s() {
+        // d1.div(d2): kg / s → kg/s.
+        compile_src("function f(a: Scalar<kg>, b: Scalar<s>): Scalar<kg/s>\n  return a / b\nend");
+    }
+
+    #[test]
+    fn arith_int_int_div_returns_int() {
+        // Q4-2: Int / Int = Int (integer division).
+        compile_src("function f(): Int\n  return 5 / 2\nend");
+    }
+
+    #[test]
+    fn arith_int_mul_scalar_kg_propagates_dim() {
+        // Spec §4.7: i * dt produces Scalar<dt's dim>. Int promotes to ZERO,
+        // ZERO * kg = kg → Scalar<kg>.
+        compile_src("function f(dt: Scalar<kg>): Scalar<kg>\n  return 5 * dt\nend");
     }
 
     #[test]
