@@ -231,6 +231,20 @@ pub fn dimension_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnosti
     )
 }
 
+/// Reported when two `Vec` operands of `+` / `-` have different lengths
+/// (e.g. `Vec<3> + Vec<2>`). Binary-op symmetric — names both sides'
+/// lengths rather than an "expected" side. Per Q5-4 this fires *before*
+/// any dimension check so a shape-and-dim double mismatch surfaces a
+/// single (shape) diagnostic with no cascade.
+pub fn shape_mismatch_vec(span: Span, left_len: usize, right_len: usize) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "Vec shape mismatch: left side has length {left_len}, but right side has length {right_len}"
+        ),
+    )
+}
+
 /// Render a `Ty` for diagnostic messages. Dim-carrying `Scalar` / `Vec`
 /// render their SI unit via [`Dimension::format_si`] (e.g. `Scalar<kg>`,
 /// `Vec<3, m*s^-1>`); dimensionless ones elide the unit (`Scalar`,

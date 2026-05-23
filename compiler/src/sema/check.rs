@@ -498,11 +498,64 @@ impl<'a> TypeChecker<'a> {
                 }
             },
 
-            // Vec/Mat: PR-3b/3c placeholder (shape preserved, dim passes
-            // through). Mat takes precedence over Vec when both appear.
-            // Replaced by real Q5/Q6 rules in Tasks 3-4.
+            // Mat: PR-3b/3c placeholder (shape preserved). Mat takes
+            // precedence over Vec when both appear (so Mat·Vec stays on the
+            // placeholder until Task 4's Q6 rules land). Replaced in Task 4.
             (_, Ty::Mat(m, n), _) | (_, _, Ty::Mat(m, n)) => Ty::Mat(*m, *n),
-            (_, Ty::Vec(n, d), _) | (_, _, Ty::Vec(n, d)) => Ty::Vec(*n, *d),
+
+            // Q5: Vec rules.
+            //
+            // Vec +/- Vec: same shape AND same dim. Shape is checked first
+            // so a shape-and-dim double mismatch yields a single (shape)
+            // diagnostic, no cascade (Q5-4).
+            (BinOp::Add | BinOp::Sub, Ty::Vec(n1, d1), Ty::Vec(n2, d2)) => {
+                if n1 != n2 {
+                    self.diagnostics
+                        .push(crate::sema::diag::shape_mismatch_vec(l_span, *n1, *n2));
+                    Ty::Error
+                } else if d1 != d2 {
+                    self.diagnostics.push(crate::sema::diag::dimension_mismatch(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
+                    Ty::Error
+                } else {
+                    Ty::Vec(*n1, *d1)
+                }
+            }
+
+            // Vec * Scalar / Scalar * Vec (commutative): dim multiplied.
+            (BinOp::Mul, Ty::Vec(n, dv), Ty::Scalar(ds))
+            | (BinOp::Mul, Ty::Scalar(ds), Ty::Vec(n, dv)) => match dv.mul(*ds) {
+                Ok(d) => Ty::Vec(*n, d),
+                Err(_) => {
+                    self.diagnostics
+                        .push(crate::sema::diag::dimension_overflow(l_span));
+                    Ty::Error
+                }
+            },
+
+            // Vec / Scalar: dim divided. (Scalar / Vec is rejected below.)
+            (BinOp::Div, Ty::Vec(n, dv), Ty::Scalar(ds)) => match dv.div(*ds) {
+                Ok(d) => Ty::Vec(*n, d),
+                Err(_) => {
+                    self.diagnostics
+                        .push(crate::sema::diag::dimension_overflow(l_span));
+                    Ty::Error
+                }
+            },
+
+            // Every other Vec involvement is rejected: Vec*Vec, Vec/Vec,
+            // Vec +/- Scalar (broadcasting), Scalar / Vec, etc.
+            (_, Ty::Vec(_, _), _) | (_, _, Ty::Vec(_, _)) => {
+                self.diagnostics.push(crate::sema::diag::type_mismatch(
+                    l_span,
+                    "Vec operation not supported for these operands (Vec +/- Vec requires equal shape and dimension; use dot()/cross() for vector products; Vec scales by Scalar only)",
+                ));
+                Ty::Error
+            }
 
             _ => {
                 self.diagnostics.push(crate::sema::diag::type_mismatch(
@@ -1220,6 +1273,92 @@ mod tests {
         // Spec §4.7: i * dt produces Scalar<dt's dim>. Int promotes to ZERO,
         // ZERO * kg = kg → Scalar<kg>.
         compile_src("function f(dt: Scalar<kg>): Scalar<kg>\n  return 5 * dt\nend");
+    }
+
+    // ----- PR-3d-β Task 3: synth_arith Vec rules (Q5) -----
+    //
+    // Dim-carrying Vecs are supplied via params (not `let a: Vec<3, m> = [..]`)
+    // for the same Task-10 coercion reason as the Q4 tests above.
+
+    #[test]
+    fn vec_add_same_shape_same_dim_returns_vec() {
+        compile_src("function f(a: Vec<3, m>, b: Vec<3, m>): Vec<3, m>\n  return a + b\nend");
+    }
+
+    #[test]
+    fn vec_add_shape_mismatch_diag() {
+        let diags = diags_for("function f(a: Vec<3>, b: Vec<2>): Vec<3>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(
+            diags[0].message.contains("shape") || diags[0].message.contains("Vec"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn vec_add_dim_mismatch_diag() {
+        let diags =
+            diags_for("function f(a: Vec<3, m>, b: Vec<3, kg>): Vec<3, m>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(diags[0].message.contains("dimension mismatch in '+'"));
+    }
+
+    #[test]
+    fn vec_shape_first_diag_when_both_mismatch() {
+        // Q5-4: shape diag wins, dim diag suppressed (single diag, no cascade).
+        let diags =
+            diags_for("function f(a: Vec<3, m>, b: Vec<2, kg>): Vec<3, m>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "expected single shape diag, got: {diags:?}");
+        assert!(
+            diags[0].message.contains("shape"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn vec_mul_scalar_propagates_dim() {
+        // Vec<3, m> * Scalar<s> → Vec<3, m*s>.
+        compile_src("function f(v: Vec<3, m>, t: Scalar<s>): Vec<3, m*s>\n  return v * t\nend");
+    }
+
+    #[test]
+    fn scalar_mul_vec_commutative() {
+        // Scalar<s> * Vec<3, m> → Vec<3, m*s> (commutative).
+        compile_src("function f(v: Vec<3, m>, t: Scalar<s>): Vec<3, m*s>\n  return t * v\nend");
+    }
+
+    #[test]
+    fn vec_div_scalar_subtracts_dim() {
+        // Vec<3, m> / Scalar<s> → Vec<3, m/s>.
+        compile_src("function f(v: Vec<3, m>, t: Scalar<s>): Vec<3, m/s>\n  return v / t\nend");
+    }
+
+    #[test]
+    fn vec_mul_vec_rejected_diag() {
+        // Q5-1: Vec*Vec rejected (use dot()/cross()).
+        let diags = diags_for("function f(a: Vec<3>, b: Vec<3>): Vec<3>\n  return a * b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(
+            diags[0].message.contains("not") || diags[0].message.contains("invalid"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn vec_plus_scalar_rejected_diag() {
+        // Q5-3: Vec + Scalar broadcasting rejected.
+        let diags = diags_for("function f(v: Vec<3>, s: Scalar): Vec<3>\n  return v + s\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+    }
+
+    #[test]
+    fn scalar_div_vec_rejected() {
+        // Scalar / Vec rejected (only Vec / Scalar allowed).
+        let diags = diags_for("function f(v: Vec<3>, s: Scalar): Vec<3>\n  return s / v\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
     }
 
     #[test]

@@ -522,27 +522,22 @@ end";
 }
 
 #[test]
-fn compile_vec_dim_mixing_zero_behavior_unchanged() {
-    // Slice-boundary pin (CQ-IMP1): the Vec arm of `synth_arith`
-    // (compiler/src/sema/check.rs Vec/Vec arm) is a separate code
-    // path from the Scalar arm. PR-3d-α picks the LEFT operand's
-    // dim (so `Vec<3, kg> + Vec<3, m>` returns `Vec<3, kg>`, which
-    // unifies cleanly against an annotated `Vec<3, kg>` return).
-    //
-    // PR-3d-β must flip BOTH the Scalar arm AND the Vec arm. This
-    // test pins the Vec arm so a partial β migration (Scalar flipped
-    // but Vec not) is loudly detectable.
-    //
-    // When PR-3d-β lands, this assertion becomes `result.is_err()`
-    // with `dimension_mismatch`.
+fn compile_vec_dim_mixing_flips_to_dim_mismatch_at_task3() {
+    // Slice-boundary pin (CQ-IMP1), now FLIPPED. The Vec arm of
+    // `synth_arith` is a separate code path from the Scalar arm; PR-3d-α
+    // picked the LEFT operand's dim so `Vec<3, kg> + Vec<3, m>` returned
+    // `Vec<3, kg>` (accepted). PR-3d-β Task 3 lands real Q5 Vec rules:
+    // `+`/`-` require equal dimension, so this now errors with a
+    // `dimension_mismatch` (same shape, so the shape check passes first).
     let src = "\
 function f(x: Vec<3, kg>, y: Vec<3, m>): Vec<3, kg>
   return x + y
 end";
-    let result = dyne::compile(src);
+    let diags = dyne::compile(src).expect_err("Vec<3,kg> + Vec<3,m> must now be a dim mismatch");
     assert!(
-        result.is_ok(),
-        "PR-3d-α should still accept dim-mixing under Vec `+` (β handles the diag); diags: {:?}",
-        result.err()
+        diags
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in '+'")),
+        "diags: {diags:?}"
     );
 }
