@@ -1289,10 +1289,9 @@ mod tests {
     fn vec_add_shape_mismatch_diag() {
         let diags = diags_for("function f(a: Vec<3>, b: Vec<2>): Vec<3>\n  return a + b\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert!(
-            diags[0].message.contains("shape") || diags[0].message.contains("Vec"),
-            "msg: {}",
-            diags[0].message
+        assert_eq!(
+            diags[0].message,
+            "Vec shape mismatch: left side has length 3, but right side has length 2"
         );
     }
 
@@ -1301,7 +1300,10 @@ mod tests {
         let diags =
             diags_for("function f(a: Vec<3, m>, b: Vec<3, kg>): Vec<3, m>\n  return a + b\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert!(diags[0].message.contains("dimension mismatch in '+'"));
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '+': left side has Vec<3, m>, but right side has Vec<3, kg>"
+        );
     }
 
     #[test]
@@ -1310,10 +1312,10 @@ mod tests {
         let diags =
             diags_for("function f(a: Vec<3, m>, b: Vec<2, kg>): Vec<3, m>\n  return a + b\nend");
         assert_eq!(diags.len(), 1, "expected single shape diag, got: {diags:?}");
-        assert!(
-            diags[0].message.contains("shape"),
-            "msg: {}",
-            diags[0].message
+        // Shape diag only — the dim mismatch (m vs kg) is suppressed (Q5-4).
+        assert_eq!(
+            diags[0].message,
+            "Vec shape mismatch: left side has length 3, but right side has length 2"
         );
     }
 
@@ -1335,16 +1337,16 @@ mod tests {
         compile_src("function f(v: Vec<3, m>, t: Scalar<s>): Vec<3, m/s>\n  return v / t\nend");
     }
 
+    // The unsupported-Vec-operation reject message, shared by the three
+    // rejection cases below (Vec*Vec, Vec+Scalar broadcasting, Scalar/Vec).
+    const VEC_REJECT_MSG: &str = "Vec operation not supported for these operands (Vec +/- Vec requires equal shape and dimension; use dot()/cross() for vector products; Vec scales by Scalar only)";
+
     #[test]
     fn vec_mul_vec_rejected_diag() {
         // Q5-1: Vec*Vec rejected (use dot()/cross()).
         let diags = diags_for("function f(a: Vec<3>, b: Vec<3>): Vec<3>\n  return a * b\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert!(
-            diags[0].message.contains("not") || diags[0].message.contains("invalid"),
-            "msg: {}",
-            diags[0].message
-        );
+        assert_eq!(diags[0].message, VEC_REJECT_MSG);
     }
 
     #[test]
@@ -1352,6 +1354,7 @@ mod tests {
         // Q5-3: Vec + Scalar broadcasting rejected.
         let diags = diags_for("function f(v: Vec<3>, s: Scalar): Vec<3>\n  return v + s\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, VEC_REJECT_MSG);
     }
 
     #[test]
@@ -1359,6 +1362,7 @@ mod tests {
         // Scalar / Vec rejected (only Vec / Scalar allowed).
         let diags = diags_for("function f(v: Vec<3>, s: Scalar): Vec<3>\n  return s / v\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, VEC_REJECT_MSG);
     }
 
     #[test]
