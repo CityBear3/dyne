@@ -1170,9 +1170,10 @@ mod tests {
         let diags =
             diags_for("function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg>\n  return a + b\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert!(diags[0].message.contains("dimension mismatch in '+'"));
-        assert!(diags[0].message.contains("kg"));
-        assert!(diags[0].message.contains('m'));
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
+        );
     }
 
     #[test]
@@ -1184,9 +1185,16 @@ mod tests {
     #[test]
     fn arith_int_plus_scalar_kg_dim_mismatch_diag() {
         // Q4-1: Int promotes to Scalar(ZERO); ZERO != kg → dimension_mismatch.
+        // The left side renders as bare `Scalar` (dimensionless, the promoted
+        // Int) rather than `Int` — Q7-A routes Int→Scalar conversion failures
+        // through dimension_mismatch, so "Scalar vs Scalar<kg>" faithfully
+        // reflects the type system's reasoning. Lock that rendering in.
         let diags = diags_for("function f(x: Scalar<kg>): Scalar<kg>\n  return 1 + x\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert!(diags[0].message.contains("dimension mismatch in '+'"));
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '+': left side has Scalar, but right side has Scalar<kg>"
+        );
     }
 
     #[test]
