@@ -256,7 +256,10 @@ impl<'a> TypeChecker<'a> {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
                 self.synth_arith(op, &lt, &rt, l.span)
             }
-            BinOp::Pow => self.synth_pow(&lt, &rt, l.span, r.span),
+            // Pow takes the exponent expression (not just its type) so it can
+            // require an integer literal; `rt` is computed/recorded above but
+            // synth_pow reads `r`'s syntactic form for the literal value.
+            BinOp::Pow => self.synth_pow(&lt, r, l.span),
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                 self.synth_comparison(&lt, &rt, l.span)
             }
@@ -644,36 +647,84 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Pow: base must be `Int` / `Scalar` / `Vec` / `Mat`; exponent must
-    /// be `Int`. Vec/Mat semantics (element-wise vs. linear-algebra power)
-    /// land in PR-3d-β.
+    /// Pow (`^`). The exponent must be an integer literal (DD §type-checker):
+    /// - `Int ^ n` → `Int`
+    /// - `Scalar(d) ^ n` → `Scalar(d.pow(n))`
+    /// - `Vec(len, d) ^ n` → `Vec(len, d.pow(n))` (componentwise — each element
+    ///   is raised, so the per-element dimension is `d.pow(n)`; Q5/engineer
+    ///   judgment per plan Task 5)
+    /// - `Mat(m, m) ^ n`, `n >= 0` → `Mat(m, m)` (square + non-negative, Q6-3);
+    ///   non-square or negative (matrix inverse) → error
     ///
-    /// Slice boundary: we strip dim across both Scalar and Vec arms here
-    /// so the operator-side is uniform (`synth_pow` returns `ZERO` for
-    /// every shape that can carry a dim). `synth_arith`'s Vec/Mat arm is
-    /// asymmetric — it preserves the operand's `Dimension` because Vec
-    /// arithmetic in α is a non-Error placeholder for cross-context
-    /// unification (β re-routes it through unify with real propagation).
-    /// Preserving the input dim *here* would leak it into return-type
-    /// unify and surface a confused "expected `Scalar`, found `Scalar`"
-    /// diag once PR-3d-α annotations carry real dims.
-    fn synth_pow(&mut self, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
-        let result = match l {
-            Ty::Int => Ty::Int,
-            Ty::Scalar(_) => Ty::Scalar(Dimension::ZERO),
-            Ty::Vec(n, _) => Ty::Vec(*n, Dimension::ZERO),
-            Ty::Mat(m, n) => Ty::Mat(*m, *n),
-            _ => Ty::Error,
+    /// `base_ty` is the already-synthesized base type (synth_binop synthesized
+    /// it); `exponent` is the raw expression so we can require a literal.
+    fn synth_pow(&mut self, base_ty: &Ty, exponent: &Expr, base_span: Span) -> Ty {
+        // Q9 defense-in-depth: a failed-lowering base short-circuits.
+        if matches!(base_ty, Ty::Error) {
+            return Ty::Error;
+        }
+
+        // The exponent must be an integer literal. The expression parser
+        // represents a negative literal as `Neg(IntLit)`, so accept both forms.
+        let Some(n) = exponent_literal(exponent) else {
+            self.diagnostics.push(Diagnostic::type_error(
+                exponent.span,
+                "`^` exponent must be an integer literal",
+            ));
+            return Ty::Error;
         };
-        if !matches!(r, Ty::Int) {
-            self.diagnostics
-                .push(crate::sema::diag::op_type_error(r_span, "`^` exponent", r));
+
+        match base_ty {
+            Ty::Int => Ty::Int,
+            Ty::Scalar(d) => self.pow_dim(*d, n, base_span).map_or(Ty::Error, Ty::Scalar),
+            Ty::Vec(len, d) => self
+                .pow_dim(*d, n, base_span)
+                .map_or(Ty::Error, |nd| Ty::Vec(*len, nd)),
+            Ty::Mat(m, cols) => {
+                // Q6-3: square + non-negative only.
+                if m != cols {
+                    self.diagnostics.push(Diagnostic::type_error(
+                        base_span,
+                        format!("`^` on a Mat requires a square matrix, found Mat<{m}, {cols}>"),
+                    ));
+                    Ty::Error
+                } else if n < 0 {
+                    self.diagnostics.push(Diagnostic::type_error(
+                        base_span,
+                        "`^` on a Mat with a negative exponent (matrix inverse) is not supported",
+                    ));
+                    Ty::Error
+                } else {
+                    Ty::Mat(*m, *cols)
+                }
+            }
+            _ => {
+                self.diagnostics.push(crate::sema::diag::op_type_error(
+                    base_span, "`^` base", base_ty,
+                ));
+                Ty::Error
+            }
         }
-        if matches!(result, Ty::Error) {
+    }
+
+    /// Raise a `Dimension` to an integer power for `^` (Scalar/Vec base).
+    /// Narrows the exponent to `i8` (out-of-range → `unit_exponent_out_of_range`)
+    /// then applies `Dimension::pow` (component overflow → `dimension_overflow`).
+    /// Returns `None` (with a diag pushed) on either failure.
+    fn pow_dim(&mut self, d: Dimension, n: i64, span: Span) -> Option<Dimension> {
+        let Ok(exp) = i8::try_from(n) else {
             self.diagnostics
-                .push(crate::sema::diag::op_type_error(l_span, "`^` base", l));
+                .push(crate::sema::diag::unit_exponent_out_of_range(span, n));
+            return None;
+        };
+        match d.pow(exp) {
+            Ok(nd) => Some(nd),
+            Err(_) => {
+                self.diagnostics
+                    .push(crate::sema::diag::dimension_overflow(span));
+                None
+            }
         }
-        result
     }
 
     fn synth_comparison(&mut self, l: &Ty, r: &Ty, l_span: Span) -> Ty {
@@ -1182,6 +1233,22 @@ fn promote_int_to_scalar(l: &Ty, r: &Ty) -> (Ty, Ty) {
             (l.clone(), Ty::Scalar(Dimension::ZERO))
         }
         _ => (l.clone(), r.clone()),
+    }
+}
+
+/// Extract an integer literal exponent from a `^` operand. The expression
+/// parser represents a negative literal as `Neg(IntLit)` (unary minus binds
+/// in `parse_prefix`), so both `n` (`IntLit`) and `-n` (`Neg(IntLit)`) are
+/// recognized. Any other shape (variable, expression, double negation) →
+/// `None`, which `synth_pow` reports as "exponent must be an integer literal".
+fn exponent_literal(e: &Expr) -> Option<i64> {
+    match &e.kind {
+        ExprKind::IntLit(n) => Some(*n),
+        ExprKind::UnaryOp(UnaryOp::Neg, inner) => match &inner.kind {
+            ExprKind::IntLit(n) => Some(-n),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -1707,6 +1774,92 @@ mod tests {
             diags[0].message.contains("base"),
             "msg: {}",
             diags[0].message
+        );
+    }
+
+    // ----- PR-3d-β Task 5: synth_pow full power rules (Q4 + Q6-3) -----
+    //
+    // Dim-carrying bases via params (Task-10 coercion deferral). Diags
+    // assert_eq! full message.
+
+    #[test]
+    fn pow_scalar_kg_squared_returns_kg_squared() {
+        // Scalar<kg> ^ 2 → Scalar<kg^2> (dim propagates through `^`).
+        compile_src("function f(m: Scalar<kg>): Scalar<kg^2>\n  return m ^ 2\nend");
+    }
+
+    #[test]
+    fn pow_scalar_negative_exponent() {
+        // Scalar<s> ^ -1 → Scalar<s^-1>. The expression parser represents the
+        // exponent as Neg(IntLit(1)); exponent_literal recovers -1.
+        compile_src("function f(t: Scalar<s>): Scalar<s^-1>\n  return t ^ -1\nend");
+    }
+
+    #[test]
+    fn pow_non_intlit_exponent_diag() {
+        // DD §type-checker: a non-literal exponent is a type error.
+        let diags = diags_for("function f(): Int\n  let n: Int = 2\n  return 2 ^ n\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, "`^` exponent must be an integer literal");
+    }
+
+    #[test]
+    fn pow_vec_componentwise_propagates_dim() {
+        // Q5/engineer judgment: Vec<3, m> ^ 2 → Vec<3, m^2> (each component
+        // raised, so the per-element dimension is m^2). α stripped this to
+        // Vec<3> (dimensionless); now the unit propagates.
+        compile_src("function f(v: Vec<3, m>): Vec<3, m^2>\n  return v ^ 2\nend");
+    }
+
+    #[test]
+    fn pow_square_mat_nonneg_returns_mat() {
+        // Q6-3: Mat<3,3> ^ 2 → Mat<3,3>.
+        compile_src("function f(m: Mat<3, 3>): Mat<3, 3>\n  return m ^ 2\nend");
+    }
+
+    #[test]
+    fn pow_non_square_mat_diag() {
+        // Q6-3: Mat<2,3> ^ 2 — non-square, rejected.
+        let diags = diags_for("function f(m: Mat<2, 3>): Mat<2, 3>\n  return m ^ 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "`^` on a Mat requires a square matrix, found Mat<2, 3>"
+        );
+    }
+
+    #[test]
+    fn pow_mat_negative_exponent_diag() {
+        // Q6-3: Mat ^ -1 (matrix inverse) deferred → rejected.
+        let diags = diags_for("function f(m: Mat<3, 3>): Mat<3, 3>\n  return m ^ -1\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "`^` on a Mat with a negative exponent (matrix inverse) is not supported"
+        );
+    }
+
+    #[test]
+    fn pow_scalar_dim_overflow_diag() {
+        // Scalar<m^2> ^ 100 → element 2*100 = 200 overflows i8 in
+        // Dimension::pow (the exponent 100 is itself in i8 range).
+        let diags = diags_for("function f(x: Scalar<m^2>): Scalar\n  return x ^ 100\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(
+            diags[0].message.contains("overflow"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn pow_scalar_exponent_out_of_i8_range_diag() {
+        // Exponent 200 > i8::MAX (127) — rejected before the dim pow.
+        let diags = diags_for("function f(x: Scalar<m>): Scalar\n  return x ^ 200\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "unit exponent 200 out of valid range [-128, 127]"
         );
     }
 

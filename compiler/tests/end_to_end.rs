@@ -481,25 +481,22 @@ end";
 }
 
 #[test]
-fn compile_operator_arith_dim_propagation_partial_after_task2() {
-    // Slice-boundary pin, mid-β. PR-3d-β Task 2 lands real Scalar `+`/`-`
-    // dimension checking, so the `+` arm now FLIPS from α's accept-via-ZERO
-    // to a `dimension_mismatch` error. The `^` arm has NOT flipped yet:
-    // `synth_pow`'s rewrite is Task 5, so `kg ^ 2` still strips dim to
-    // `Scalar(ZERO)` and unifies cleanly against the dimensionless return.
-    // Task 5 flips the `^` arm; Task 7 supersedes this with full operator
-    // e2e coverage.
+fn compile_operator_dim_propagation_active_both_arms() {
+    // Slice-boundary pin, now FULLY flipped. PR-3d-β makes operators
+    // propagate dimensions, so both arms that α accepted-via-ZERO now error:
+    // Task 2 flipped `+` (Q4 Add/Sub equal-dim); Task 5 flips `^` (synth_pow
+    // raises the dimension instead of stripping it). Task 7 supersedes this
+    // with full positive operator coverage (spec examples).
     //
     // Params (rather than let-bindings) keep the test on pure operator
     // behavior without tripping the literal→unit coercion gap (Task 10).
 
-    // `+` arm: kg + m → dimension_mismatch (Task 2, Q4 Add/Sub equal-dim).
+    // `+` arm: kg + m → dimension_mismatch (Q4 Add/Sub equal-dim).
     let plus_src = "\
 function f(x: Scalar<kg>, y: Scalar<m>): Scalar
   return x + y
 end";
-    let plus = dyne::compile(plus_src);
-    let plus_diags = plus.expect_err("kg + m must now be a dimension mismatch");
+    let plus_diags = dyne::compile(plus_src).expect_err("kg + m must be a dimension mismatch");
     assert!(
         plus_diags
             .iter()
@@ -507,17 +504,18 @@ end";
         "diags: {plus_diags:?}"
     );
 
-    // `^` arm: kg ^ 2 with dimensionless return — still accepted until the
-    // Task 5 synth_pow rewrite (input dim stripped to ZERO).
+    // `^` arm: `x ^ 2` now yields Scalar<kg^2> (dim propagated through `^`),
+    // which no longer unifies with the dimensionless `Scalar` return — so the
+    // mismatch diag names the propagated `Scalar<kg^2>`. (α stripped it to
+    // ZERO and accepted.)
     let pow_src = "\
 function g(x: Scalar<kg>): Scalar
   return x ^ 2
 end";
-    let pow = dyne::compile(pow_src);
+    let pow_diags = dyne::compile(pow_src).expect_err("kg^2 must not match dimensionless return");
     assert!(
-        pow.is_ok(),
-        "`^` dim propagation lands in Task 5; α-style ZERO-strip still applies here; diags: {:?}",
-        pow.err()
+        pow_diags.iter().any(|d| d.message.contains("Scalar<kg^2>")),
+        "expected the propagated Scalar<kg^2> in a diag; got: {pow_diags:?}"
     );
 }
 
