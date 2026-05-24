@@ -560,10 +560,9 @@ fn compile_spec_section_4_8_vec_shape_mismatch() {
     let src = "function f(): Vec<3>\n  let a: Vec<3> = [1.0, 2.0, 3.0]\n  let b: Vec<2> = [1.0, 2.0]\n  return a + b\nend";
     let diags = dyne::compile(src).unwrap_err();
     assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("shape") || d.message.contains("Vec<")),
-        "spec §4.8 example must produce a shape diag; diags: {diags:?}"
+        diags.iter().any(|d| d.message
+            == "shape mismatch in '+': left side has Vec<3>, but right side has Vec<2>"),
+        "spec §4.8 example must produce the shape-mismatch diag; diags: {diags:?}"
     );
 }
 

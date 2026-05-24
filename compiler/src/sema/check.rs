@@ -26,7 +26,7 @@ use crate::ast::{
 use crate::diag::Diagnostic;
 use crate::ids::{DefId, NodeId};
 use crate::sema::resolve::{BindingTable, DefKind, DefinitionTable, ResolveTable};
-use crate::sema::ty::{Dimension, Ty, VariantPayload, lower_type};
+use crate::sema::ty::{Dimension, OverflowError, Ty, VariantPayload, lower_type};
 use crate::sema::unify;
 use crate::source::Span;
 
@@ -515,22 +515,12 @@ impl<'a> TypeChecker<'a> {
             }
 
             // Scalar * Scalar / Scalar: dimension arithmetic.
-            (BinOp::Mul, Ty::Scalar(d1), Ty::Scalar(d2)) => match d1.mul(*d2) {
-                Ok(d) => Ty::Scalar(d),
-                Err(_) => {
-                    self.diagnostics
-                        .push(crate::sema::diag::dimension_overflow(l_span));
-                    Ty::Error
-                }
-            },
-            (BinOp::Div, Ty::Scalar(d1), Ty::Scalar(d2)) => match d1.div(*d2) {
-                Ok(d) => Ty::Scalar(d),
-                Err(_) => {
-                    self.diagnostics
-                        .push(crate::sema::diag::dimension_overflow(l_span));
-                    Ty::Error
-                }
-            },
+            (BinOp::Mul, Ty::Scalar(d1), Ty::Scalar(d2)) => self
+                .dim_op_result(d1.mul(*d2), l_span)
+                .map_or(Ty::Error, Ty::Scalar),
+            (BinOp::Div, Ty::Scalar(d1), Ty::Scalar(d2)) => self
+                .dim_op_result(d1.div(*d2), l_span)
+                .map_or(Ty::Error, Ty::Scalar),
 
             // Q6: Mat rules. Mat is dimensionless per spec §4.4. Placed
             // before the Vec arms so any Mat-involving pair is resolved here
@@ -541,7 +531,7 @@ impl<'a> TypeChecker<'a> {
                 if m1 == m2 && n1 == n2 {
                     Ty::Mat(*m1, *n1)
                 } else {
-                    self.diagnostics.push(crate::sema::diag::shape_mismatch_mat(
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch(
                         l_span,
                         op_symbol(op),
                         &l_eff,
@@ -556,7 +546,7 @@ impl<'a> TypeChecker<'a> {
                 if n1 == n2 {
                     Ty::Mat(*m, *p)
                 } else {
-                    self.diagnostics.push(crate::sema::diag::shape_mismatch_mat(
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch(
                         l_span,
                         op_symbol(op),
                         &l_eff,
@@ -573,7 +563,7 @@ impl<'a> TypeChecker<'a> {
                 if n1 == n2 {
                     Ty::Vec(*m, *d)
                 } else {
-                    self.diagnostics.push(crate::sema::diag::shape_mismatch_mat(
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch(
                         l_span,
                         op_symbol(op),
                         &l_eff,
@@ -621,8 +611,12 @@ impl<'a> TypeChecker<'a> {
             // diagnostic, no cascade (Q5-4).
             (BinOp::Add | BinOp::Sub, Ty::Vec(n1, d1), Ty::Vec(n2, d2)) => {
                 if n1 != n2 {
-                    self.diagnostics
-                        .push(crate::sema::diag::shape_mismatch_vec(l_span, *n1, *n2));
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
                     Ty::Error
                 } else if d1 != d2 {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
@@ -639,24 +633,14 @@ impl<'a> TypeChecker<'a> {
 
             // Vec * Scalar / Scalar * Vec (commutative): dim multiplied.
             (BinOp::Mul, Ty::Vec(n, dv), Ty::Scalar(ds))
-            | (BinOp::Mul, Ty::Scalar(ds), Ty::Vec(n, dv)) => match dv.mul(*ds) {
-                Ok(d) => Ty::Vec(*n, d),
-                Err(_) => {
-                    self.diagnostics
-                        .push(crate::sema::diag::dimension_overflow(l_span));
-                    Ty::Error
-                }
-            },
+            | (BinOp::Mul, Ty::Scalar(ds), Ty::Vec(n, dv)) => self
+                .dim_op_result(dv.mul(*ds), l_span)
+                .map_or(Ty::Error, |d| Ty::Vec(*n, d)),
 
             // Vec / Scalar: dim divided. (Scalar / Vec is rejected below.)
-            (BinOp::Div, Ty::Vec(n, dv), Ty::Scalar(ds)) => match dv.div(*ds) {
-                Ok(d) => Ty::Vec(*n, d),
-                Err(_) => {
-                    self.diagnostics
-                        .push(crate::sema::diag::dimension_overflow(l_span));
-                    Ty::Error
-                }
-            },
+            (BinOp::Div, Ty::Vec(n, dv), Ty::Scalar(ds)) => self
+                .dim_op_result(dv.div(*ds), l_span)
+                .map_or(Ty::Error, |d| Ty::Vec(*n, d)),
 
             // Every other Vec involvement is rejected: Vec*Vec, Vec/Vec,
             // Vec +/- Scalar (broadcasting), Scalar / Vec, etc.
@@ -760,24 +744,38 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Raise a `Dimension` to an integer power for a `Scalar` base under `^`.
-    /// Narrows the exponent to `i8` (out-of-range → `unit_exponent_out_of_range`)
-    /// then applies `Dimension::pow` (component overflow → `dimension_overflow`).
-    /// Returns `None` (with a diag pushed) on either failure.
-    fn pow_dim(&mut self, d: Dimension, n: i64, span: Span) -> Option<Dimension> {
-        let Ok(exp) = i8::try_from(n) else {
-            self.diagnostics
-                .push(crate::sema::diag::unit_exponent_out_of_range(span, n));
-            return None;
-        };
-        match d.pow(exp) {
-            Ok(nd) => Some(nd),
+    /// Resolve a `Dimension` arithmetic result for an operator: on overflow,
+    /// push a `dimension_overflow` diag and return `None`; otherwise `Some(d)`.
+    /// Shared by `synth_arith`'s Scalar/Vec `*` and `/` arms and `pow_dim`, so
+    /// the overflow-diag boilerplate lives in one place. Callers map `Some`/
+    /// `None` to the operand-shaped result `Ty` (`Ty::Scalar` / `Ty::Vec`) /
+    /// `Ty::Error`.
+    fn dim_op_result(
+        &mut self,
+        result: Result<Dimension, OverflowError>,
+        span: Span,
+    ) -> Option<Dimension> {
+        match result {
+            Ok(d) => Some(d),
             Err(_) => {
                 self.diagnostics
                     .push(crate::sema::diag::dimension_overflow(span));
                 None
             }
         }
+    }
+
+    /// Raise a `Dimension` to an integer power for a `Scalar` base under `^`.
+    /// Narrows the exponent to `i8` (out-of-range → `unit_exponent_out_of_range`)
+    /// then applies `Dimension::pow` via `dim_op_result` (component overflow →
+    /// `dimension_overflow`). Returns `None` (with a diag pushed) on either failure.
+    fn pow_dim(&mut self, d: Dimension, n: i64, span: Span) -> Option<Dimension> {
+        let Ok(exp) = i8::try_from(n) else {
+            self.diagnostics
+                .push(crate::sema::diag::unit_exponent_out_of_range(span, n));
+            return None;
+        };
+        self.dim_op_result(d.pow(exp), span)
     }
 
     fn synth_comparison(&mut self, l: &Ty, r: &Ty, l_span: Span) -> Ty {
@@ -1515,7 +1513,7 @@ mod tests {
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
         assert_eq!(
             diags[0].message,
-            "Vec shape mismatch: left side has length 3, but right side has length 2"
+            "shape mismatch in '+': left side has Vec<3>, but right side has Vec<2>"
         );
     }
 
@@ -1539,7 +1537,7 @@ mod tests {
         // Shape diag only — the dim mismatch (m vs kg) is suppressed (Q5-4).
         assert_eq!(
             diags[0].message,
-            "Vec shape mismatch: left side has length 3, but right side has length 2"
+            "shape mismatch in '+': left side has Vec<3, m>, but right side has Vec<2, kg>"
         );
     }
 

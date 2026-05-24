@@ -231,26 +231,16 @@ pub fn dimension_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnosti
     )
 }
 
-/// Reported when two `Vec` operands of `+` / `-` have different lengths
-/// (e.g. `Vec<3> + Vec<2>`). Binary-op symmetric — names both sides'
-/// lengths rather than an "expected" side. Per Q5-4 this fires *before*
-/// any dimension check so a shape-and-dim double mismatch surfaces a
-/// single (shape) diagnostic with no cascade.
-pub fn shape_mismatch_vec(span: Span, left_len: usize, right_len: usize) -> Diagnostic {
-    Diagnostic::type_error(
-        span,
-        format!(
-            "Vec shape mismatch: left side has length {left_len}, but right side has length {right_len}"
-        ),
-    )
-}
-
-/// Reported when a `Mat`-involving binary op has incompatible operand shapes:
-/// `Mat +/- Mat` of different dimensions, a `Mat * Mat` whose inner dims
-/// disagree, or a `Mat * Vec` whose column count ≠ the Vec length. Operator-
-/// focus (like [`dimension_mismatch`]): names the op and renders both operands
-/// via `format_ty` so the offending shapes are visible.
-pub fn shape_mismatch_mat(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+/// Reported when a binary operator's operands have incompatible *shapes*
+/// (as opposed to dimensions — see [`dimension_mismatch`]): `Vec +/- Vec` of
+/// different lengths, `Mat +/- Mat` of different dimensions, a `Mat * Mat`
+/// whose inner dims disagree, or a `Mat * Vec` whose column count ≠ the Vec
+/// length. Operator-focus (like `dimension_mismatch`): names the op symbol and
+/// renders both operands via `format_ty` so the offending shapes are visible
+/// (e.g. `Vec<3>` vs `Vec<2>`, `Mat<2, 3>` vs `Mat<2, 4>`). For `Vec +/- Vec`
+/// (Q5-4) this fires *before* the dimension check, so a shape-and-dim double
+/// mismatch surfaces a single (shape) diagnostic with no cascade.
+pub fn shape_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(
