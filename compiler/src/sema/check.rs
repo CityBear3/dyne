@@ -72,6 +72,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Record a node's synthesized type and return it. The type is stored
+    /// as-is (any unbound `Ty::Var` is left intact); a final `resolve_deep`
+    /// pass in `run()` substitutes every bound Var once all unification is
+    /// done. Recording at call time — rather than resolving here — avoids
+    /// re-walking the whole type table on every node, and a node recorded
+    /// before its Var is bound (e.g. a generic callee) is still resolved by
+    /// that final pass.
     fn record(&mut self, id: NodeId, ty: Ty) -> Ty {
         self.types.insert(id, ty.clone());
         ty
@@ -486,11 +493,24 @@ impl<'a> TypeChecker<'a> {
     /// `d1.mul(d2)` / `d1.div(d2)` (overflow → `dimension_overflow`); pure
     /// `Int op Int` stays `Int` (integer division for `/`, Q4-2).
     ///
-    /// Vec/Mat operands keep the PR-3b/3c placeholder for now: the result
-    /// is the operand's shape (NOT `Ty::Error`) so cross-context
-    /// unification still surfaces accurate "expected T, found Vec/Mat"
-    /// diagnostics (pinned by `vec_add_in_int_context_emits_diag`). Real
-    /// Q5 / Q6 Vec / Mat rules replace these arms in Tasks 3-4.
+    /// Vec rules (Q5): `+`/`-` require equal shape AND equal dimension
+    /// (shape-first diagnostic, no cascade); `Vec * Scalar` / `Scalar * Vec`
+    /// multiply the dimension (commutative); `Vec / Scalar` divides it; every
+    /// other Vec pairing (`Vec * Vec`, `Vec / Vec`, `Vec +/- Scalar`,
+    /// `Scalar / Vec`) is rejected (use `dot()` / `cross()` for products).
+    ///
+    /// Mat rules (Q6): Mat is dimensionless per spec §4.4. `+`/`-` require
+    /// equal shape; `Mat<m,n> * Mat<n,p>` → `Mat<m,p>`; `Mat<m,n> * Vec<n,d>`
+    /// → `Vec<m,d>` (Mat dimensionless, Vec dimension transparent — replaces
+    /// the PR-3b/3c arm-order placeholder per Q6-4); `Mat * Scalar` /
+    /// `Mat / Scalar` require a dimensionless Scalar (else `dimension_mismatch`).
+    /// `Vec * Mat` and `Mat / Mat` are rejected.
+    ///
+    /// On the result-shape choice: an arithmetic arm returns its computed
+    /// shape (NOT `Ty::Error`) on a dimension/shape match so a cross-context
+    /// mismatch still surfaces an accurate "expected T, found U" diagnostic
+    /// rather than being swallowed (pinned by `vec_add_in_int_context_emits_diag`
+    /// and the `*_wrong_return_dim_emits_diag` guards).
     fn synth_arith(&mut self, op: BinOp, l: &Ty, r: &Ty, l_span: Span) -> Ty {
         // Q9 (CQ M4 from α /review): short-circuit on `Ty::Error` so a
         // failed-lowering operand can't masquerade as a dimensionless
@@ -2378,6 +2398,52 @@ mod tests {
         let diags = diags_for("function f(v: Vec<3>): Int\n  return v ^ 2\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
         assert_eq!(diags[0].message, POW_VEC_REJECT_MSG);
+    }
+
+    // Success-arm regression guards (mirror `vec_add_in_int_context_emits_diag`
+    // for the mul / div / pow dimension-propagation arms). Each program's
+    // operator arm computes a concrete result type that must then mismatch the
+    // declared return type, surfacing exactly one cross-context diagnostic. If
+    // the success arm silently regressed to `Ty::Error`, that `Ty::Error`
+    // unifies with anything and NO diagnostic would fire — these tests catch
+    // that.
+
+    #[test]
+    fn scalar_mul_wrong_return_dim_emits_diag() {
+        // `a * b` = Scalar<m*kg>; reverting the Scalar-Mul success arm to
+        // Ty::Error would re-break this (the m*kg ≠ s mismatch would vanish).
+        let diags =
+            diags_for("function f(a: Scalar<kg>, b: Scalar<m>): Scalar<s>\n  return a * b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<s>`, found `Scalar<m*kg>`"
+        );
+    }
+
+    #[test]
+    fn vec_scale_wrong_return_dim_emits_diag() {
+        // `v * t` = Vec<3, m*s>; reverting the Vec*Scalar success arm to
+        // Ty::Error would re-break this.
+        let diags =
+            diags_for("function f(v: Vec<3, m>, t: Scalar<s>): Vec<3, kg>\n  return v * t\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3, m*s>`"
+        );
+    }
+
+    #[test]
+    fn scalar_pow_wrong_return_dim_emits_diag() {
+        // `x ^ 2` = Scalar<kg^2>; reverting the Scalar-pow success arm to
+        // Ty::Error would re-break this.
+        let diags = diags_for("function f(x: Scalar<kg>): Scalar<m>\n  return x ^ 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<m>`, found `Scalar<kg^2>`"
+        );
     }
 
     #[test]
