@@ -52,10 +52,13 @@ impl Table {
     /// and the inner column's substituted payload type would otherwise
     /// fall into exhaust's `Ty::Var(_)` skip arm.
     ///
-    /// Scope: resolves only the exhaust-level gap. Storage of unresolved
-    /// Vars inside `TypedProgram.types` (the §1078 leak) is a separate
-    /// concern handled later — this helper exists to keep the synth_match
-    /// fix minimal and not perturb other expression types.
+    /// Two consumers: PR-3c's `synth_match` exhaustiveness check (the
+    /// original motivation) and PR-3d-β's final pass over
+    /// `TypedProgram.types` in `check::run`, which applies `resolve_deep` to
+    /// every recorded type so no unresolved `Var` leaks into the output (the
+    /// §1078 leak — a `Var` may be bound after its owning node was recorded,
+    /// so resolving once at the end catches what record-time resolution
+    /// would miss).
     ///
     /// `Vec`/`Mat`/`Scalar` carry no `Ty` children (their type
     /// parameters are size and dimension data), so they pass through

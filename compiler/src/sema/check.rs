@@ -1335,7 +1335,20 @@ pub(crate) fn run(
             Item::Struct(_) | Item::Enum(_) | Item::Import(_) => {}
         }
     }
-    (tc.types, tc.diagnostics)
+
+    // §1078: close the Var-leak. A node's type is recorded the moment it is
+    // synthesized, but a unification `Var` it embeds may only be bound later
+    // (e.g. a generic constructor's callee node is recorded before its
+    // argument unifies the type-arg Var). A single final `resolve_deep` pass
+    // — run after every body is checked, so all bindings are in place —
+    // guarantees `TypedProgram.types` carries no unresolved `Var`. Resolving
+    // at record time would miss any Var bound after the record.
+    let resolved_types = tc
+        .types
+        .iter()
+        .map(|(id, ty)| (*id, tc.unify_table.resolve_deep(ty)))
+        .collect();
+    (resolved_types, tc.diagnostics)
 }
 
 #[cfg(test)]
@@ -2283,6 +2296,43 @@ mod tests {
         let diags = diags_for("function f(v: Vec<3>): Int\n  return v ^ 2\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
         assert_eq!(diags[0].message, POW_VEC_REJECT_MSG);
+    }
+
+    #[test]
+    fn typed_program_types_contains_no_unresolved_vars() {
+        // §1078 invariant: after check completes, no TypedProgram.types entry
+        // may contain a Ty::Var anywhere in its structure.
+        //
+        // A generic variant construction (`Just(1)`) mints a fresh type-arg
+        // Var that unification binds to Int. Two nodes record types built from
+        // that Var: the call result (`Just(1)` → Enum(Maybe, [Var])) and — the
+        // tricky one — the callee node (`Just` → Function([Var], Enum(Maybe,
+        // [Var]))), which is recorded *before* the arg unifies the Var. Only a
+        // final resolve pass (after all bindings) catches both; resolving at
+        // record time would miss the callee. This regression pins that both
+        // are fully resolved.
+        use crate::sema::ty::Ty;
+        let src = "enum Maybe<T>\n  Just(T)\n  Nothing\nend\n\
+                   function f(): Maybe<Int>\n  return Just(1)\nend";
+        let prog = parse(tokenize(src).unwrap()).unwrap();
+        let typed = check(prog).expect("clean compile");
+
+        fn contains_var(t: &Ty) -> bool {
+            match t {
+                Ty::Var(_) => true,
+                Ty::Function(args, ret) => args.iter().any(contains_var) || contains_var(ret),
+                Ty::Enum(_, args) => args.iter().any(contains_var),
+                Ty::Array(t) => contains_var(t),
+                Ty::Dict(k, v) => contains_var(k) || contains_var(v),
+                // Int / Scalar / Bool / String / Vec / Mat / Struct / Param /
+                // Error carry no nested Ty, so none can hide a Var.
+                _ => false,
+            }
+        }
+
+        for (id, ty) in typed.types.iter() {
+            assert!(!contains_var(ty), "Ty::Var leaked at {id:?}: {ty:?}");
+        }
     }
 
     #[test]
