@@ -1,0 +1,14 @@
+// E_k = 0.5 * m * v^2 — kinetic energy in canonical Joule form.
+// kg * (m/s)^2 = kg*m^2/s^2 = J
+
+function kinetic_energy(m: Scalar<kg>, v: Scalar<m/s>): Scalar<J>
+  let half: Scalar = 0.5
+  return half * m * v ^ 2
+end
+
+function main(): Int
+  let m: Scalar<kg> = 2.0
+  let v: Scalar<m/s> = 5.0
+  let e: Scalar<J> = kinetic_energy(m, v)
+  return 0
+end
