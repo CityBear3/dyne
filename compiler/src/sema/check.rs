@@ -2453,6 +2453,82 @@ mod tests {
         );
     }
 
+    // Task 13 sub-item A: complete the symmetric success-arm guards. Task 12
+    // covered Scalar-Mul / Vec*Scalar / Scalar-pow but missed the Scalar-Div,
+    // Vec/Scalar-Div, and the three Mat success arms (Mat*Mat, Mat*Vec,
+    // Mat*Scalar). A success arm regressing to `Ty::Error` unifies with any
+    // declared return (Q9 no-cascade) → 0 diags → the regression would slip
+    // through undetected. Each program's arm computes a concrete result that
+    // must mismatch the declared return, surfacing exactly one cross-context
+    // diagnostic.
+
+    #[test]
+    fn scalar_div_wrong_return_dim_emits_diag() {
+        // `a / b` = Scalar<kg*s^-1>; reverting the Scalar-Div success arm to
+        // Ty::Error would re-break this (the kg*s^-1 ≠ m mismatch would vanish).
+        let diags =
+            diags_for("function f(a: Scalar<kg>, b: Scalar<s>): Scalar<m>\n  return a / b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<m>`, found `Scalar<kg*s^-1>`"
+        );
+    }
+
+    #[test]
+    fn vec_div_scalar_wrong_return_dim_emits_diag() {
+        // `v / t` = Vec<3, m*s^-1>; reverting the Vec/Scalar-Div success arm to
+        // Ty::Error would re-break this.
+        let diags =
+            diags_for("function f(v: Vec<3, m>, t: Scalar<s>): Vec<3, kg>\n  return v / t\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3, m*s^-1>`"
+        );
+    }
+
+    #[test]
+    fn mat_mul_mat_wrong_return_shape_emits_diag() {
+        // `a * b` = Mat<2, 4>; reverting the Mat*Mat success arm to Ty::Error
+        // would re-break this (the 2x4 ≠ 3x4 shape mismatch would vanish).
+        let diags =
+            diags_for("function f(a: Mat<2, 3>, b: Mat<3, 4>): Mat<3, 4>\n  return a * b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Mat<3, 4>`, found `Mat<2, 4>`"
+        );
+    }
+
+    #[test]
+    fn mat_mul_vec_wrong_return_dim_emits_diag() {
+        // `m * v` = Vec<2, m*s^-1>; reverting the Mat*Vec success arm to
+        // Ty::Error would re-break this (and re-open the Q6-4 arm-order bug,
+        // since the placeholder returned a Mat shape rather than a Vec).
+        let diags =
+            diags_for("function f(m: Mat<2, 3>, v: Vec<3, m/s>): Vec<2, kg>\n  return m * v\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<2, kg>`, found `Vec<2, m*s^-1>`"
+        );
+    }
+
+    #[test]
+    fn mat_mul_scalar_wrong_return_shape_emits_diag() {
+        // `a * s` = Mat<2, 3> (dimensionless Scalar leaves the shape intact);
+        // reverting the Mat*Scalar success arm to Ty::Error would re-break this
+        // (the 2x3 ≠ 3x2 shape mismatch would vanish).
+        let diags =
+            diags_for("function f(a: Mat<2, 3>, s: Scalar): Mat<3, 2>\n  return a * s\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Mat<3, 2>`, found `Mat<2, 3>`"
+        );
+    }
+
     #[test]
     fn typed_program_types_contains_no_unresolved_vars() {
         // §1078 invariant: after check completes, no TypedProgram.types entry
