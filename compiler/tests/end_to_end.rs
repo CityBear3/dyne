@@ -537,3 +537,93 @@ end";
         "diags: {diags:?}"
     );
 }
+
+// ----- PR-3d-β Task 7: full-slice e2e gate (spec §4.7-4.8 + physics) -----
+//
+// Integration coverage for the landed operator rules + Task-10 coercion.
+// Dim-carrying `let` bindings are now usable directly (no param-passthrough).
+
+#[test]
+fn compile_spec_section_4_7_int_scalar_widening() {
+    // spec §4.7: `i * dt` where dt: Scalar<s>, i: Int → Scalar<s>.
+    let src = "function f(): Scalar<s>\n  let dt: Scalar<s> = 0.01\n  let i: Int = 100\n  return i * dt\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "spec §4.7 example must type-check; diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_spec_section_4_8_vec_shape_mismatch() {
+    // spec §4.8: `a + b` where a: Vec<3>, b: Vec<2> → shape mismatch.
+    let src = "function f(): Vec<3>\n  let a: Vec<3> = [1.0, 2.0, 3.0]\n  let b: Vec<2> = [1.0, 2.0]\n  return a + b\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("shape") || d.message.contains("Vec<")),
+        "spec §4.8 example must produce a shape diag; diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_spec_section_4_8_mat_vec_multiplication() {
+    // spec §4.8: `m * v` where m: Mat<2,3>, v: Vec<3> → Vec<2>.
+    let src = "function f(): Vec<2>\n  let m: Mat<2, 3> = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\n  let v: Vec<3> = [1.0, 2.0, 3.0]\n  return m * v\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "spec §4.8 Mat·Vec must produce Vec<2>; diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_force_equals_mass_times_acceleration() {
+    // F = m * a, m: Scalar<kg>, a: Vec<3, m/s^2> → Vec<3, kg*m/s^2> = Vec<3, N>.
+    let src = "function f(): Vec<3, N>\n  let m: Scalar<kg> = 1.5\n  let a: Vec<3, m/s^2> = [9.8, 0.0, 0.0]\n  return m * a\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "F = ma should type-check (kg * m/s^2 = N); diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_dim_mismatch_in_addition_diag() {
+    let src = "function f(): Scalar<kg>\n  let kg_v: Scalar<kg> = 1.0\n  let m_v: Scalar<m> = 2.0\n  return kg_v + m_v\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in '+'")),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_kinetic_energy_formula() {
+    // E_k = 0.5 * m * v^2, m: Scalar<kg>, v: Scalar<m/s>.
+    // kg * (m/s)^2 = kg*m^2/s^2 = J.
+    let src = "function f(): Scalar<J>\n  let m: Scalar<kg> = 1.5\n  let v: Scalar<m/s> = 10.0\n  let half: Scalar = 0.5\n  return half * m * v ^ 2\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "kinetic energy formula should type-check (kg * (m/s)^2 = J); diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_unit_negative_exponent_out_of_i8_range_emits_diag() {
+    // TC-I-1 (α /review): T13 enabled negative-exponent parsing, so
+    // `Scalar<s^-200>` parses; -200 is out of i8 range → the diag fires.
+    // Pairs the positive-OOR coverage (eval_unit_expr `kg^1000`).
+    let src = "function f(): Scalar<s^-200>\n  return 0.0\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("out of valid range") && d.message.contains("-200")),
+        "diags: {diags:?}"
+    );
+}
