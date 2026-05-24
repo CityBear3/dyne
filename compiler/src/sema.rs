@@ -998,4 +998,49 @@ mod tests {
             "dimension mismatch in '+': left side has Scalar, but right side has Scalar<kg>"
         );
     }
+
+    // Q10-refinement (2026-05-24): coercion is LITERAL-ONLY. A dimensionless
+    // VARIABLE / computed expression in a unit-annotated context is rejected —
+    // only numeric literals coerce. Closes the units-safety hole where
+    // `function mass_of(n: Int): Scalar<kg> return n end` silently turned a
+    // count into a mass across the function boundary. (The literal cases stay
+    // green — see the five `q10_*_promotes_*` tests above.)
+
+    #[test]
+    fn q10_dimensionless_int_variable_not_coerced() {
+        // The closed hole: a dimensionless Int variable must NOT coerce to
+        // `Scalar<kg>` (count → kg blocked). Only literals coerce.
+        let prog = parse_src("function mass_of(count: Int): Scalar<kg>\n  return count\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<kg>`, found `Int`"
+        );
+    }
+
+    #[test]
+    fn q10_dimensionless_scalar_variable_not_coerced() {
+        // A dimensionless `Scalar` variable must NOT coerce to `Scalar<kg>`.
+        let prog = parse_src("function f(x: Scalar): Scalar<kg>\n  return x\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<kg>`, found `Scalar`"
+        );
+    }
+
+    #[test]
+    fn q10_dimensionless_vec_variable_not_coerced() {
+        // Parallel to the Scalar case for the Vec coercion arm: a dimensionless
+        // `Vec<3>` variable must NOT coerce to `Vec<3, m>` (only `[...]` literals do).
+        let prog = parse_src("function f(v: Vec<3>): Vec<3, m>\n  return v\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, m>`, found `Vec<3>`"
+        );
+    }
 }

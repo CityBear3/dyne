@@ -135,17 +135,22 @@ impl<'a> TypeChecker<'a> {
         }
         let synthesized = self.synth_expr(e);
         // Q10 (spec §4.7): in an expected-type context whose destination is a
-        // unit-annotated `Scalar<u>`, a dimensionless value (an `Int` or a
-        // unit-less `Scalar`) is promoted to `Scalar<u>` — the annotation
-        // fixes the unit unambiguously. The IntLit→dimensionless-Scalar
-        // widening above covers the `u == ZERO` case; this covers `u != ZERO`,
-        // and also a non-literal dimensionless source (e.g. an `Int` variable,
-        // the spec §4.7 `let mass: Scalar<kg> = i` example). Only fires when
-        // an expected type is supplied — bare subexpressions (e.g. the `+` in
-        // `1.5 + mass`) are synthesized without an expected type and still
-        // reject a dimension mismatch.
+        // unit-annotated `Scalar<u>`, a dimensionless numeric LITERAL (an
+        // `IntLit`, a `FloatLit`, or a negated literal) is promoted to
+        // `Scalar<u>` — the annotation fixes the unit unambiguously. The
+        // IntLit→dimensionless-Scalar widening above covers the `u == ZERO`
+        // case; this covers `u != ZERO`.
+        //
+        // Q10-refinement (2026-05-24): the coercion is LITERAL-ONLY. A
+        // dimensionless variable or computed expression (`is_numeric_literal`
+        // false) falls through to `unify_or_diag` and is rejected — coercing
+        // it would silently turn e.g. a count into a mass across a function
+        // boundary. Only fires when an expected type is supplied — bare
+        // subexpressions (e.g. the `+` in `1.5 + mass`) are synthesized
+        // without an expected type and still reject a dimension mismatch.
         if let Ty::Scalar(u) = &resolved_expected
             && !u.is_dimensionless()
+            && is_numeric_literal(e)
             && (matches!(synthesized, Ty::Int)
                 || matches!(&synthesized, Ty::Scalar(d) if d.is_dimensionless()))
         {
@@ -157,8 +162,12 @@ impl<'a> TypeChecker<'a> {
         // length must match (a shape mismatch still diagnoses), and only a
         // unit-less source coerces (`Vec<n, m>` → `Vec<n, kg>` stays a
         // mismatch). No Int→Vec promotion: there is no scalar-to-vector widen.
+        //
+        // Q10-refinement: LITERAL-ONLY here too — only a `VecLit` (`[...]`)
+        // coerces; a dimensionless `Vec` variable falls through and rejects.
         if let Ty::Vec(en, eu) = &resolved_expected
             && !eu.is_dimensionless()
+            && matches!(e.kind, ExprKind::VecLit(_))
             && let Ty::Vec(sn, sd) = &synthesized
             && sn == en
             && sd.is_dimensionless()
@@ -1300,6 +1309,23 @@ fn exponent_literal(e: &Expr) -> Option<i64> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// True if `e` is a numeric literal eligible for Q10 literal-to-unit coercion
+/// — a bare `IntLit` / `FloatLit`, or one negated by a unary minus (`-1.5`,
+/// parsed as `Neg(FloatLit)`). Per the Q10-refinement (2026-05-24), only
+/// literals coerce into a unit-annotated `Scalar<u>`; a dimensionless variable
+/// or computed expression is rejected, closing the units-safety hole where a
+/// count could silently become a mass across a function boundary
+/// (`function mass_of(n: Int): Scalar<kg> return n end`).
+fn is_numeric_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::IntLit(_) | ExprKind::FloatLit(_) => true,
+        ExprKind::UnaryOp(UnaryOp::Neg, inner) => {
+            matches!(inner.kind, ExprKind::IntLit(_) | ExprKind::FloatLit(_))
+        }
+        _ => false,
     }
 }
 
