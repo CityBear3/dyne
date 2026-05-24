@@ -1100,4 +1100,57 @@ mod tests {
             Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0]))
         );
     }
+
+    // Task 13 sub-item B: Minor coverage gaps (test-coverage + adversarial-tests).
+
+    #[test]
+    fn q10_negated_int_literal_coerces() {
+        // Pins the `UnaryOp(Neg, IntLit)` arm of `is_numeric_literal` — only
+        // `Neg(FloatLit)` was pinned (q10_negated_literal_coerces). A negated
+        // *int* literal must also coerce to the annotated unit.
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let g: Scalar<m> = -3");
+        let typed = check(prog).expect("clean compile");
+        let g = def_id_of(&typed, "g");
+        assert_eq!(
+            *typed.def_types.get(&g).unwrap(),
+            Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_function_arg_promotes_vec_literal() {
+        // Vec literal coercion at the param position (only the let position was
+        // covered by q10_let_promotes_vec_literal). The dimensionless `Vec<3>`
+        // argument literal coerces to the param's `Vec<3, m>`. Parallels the
+        // Scalar pair (q10_function_arg_promotes_dimensionless_literal).
+        let prog = parse_src(
+            "function f(v: Vec<3, m>): Vec<3, m>\n  return v\nend\nlet w: Vec<3, m> = f([1.0, 2.0, 3.0])",
+        );
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_function_return_promotes_vec_literal() {
+        // Vec literal coercion at the return position. The dimensionless
+        // `Vec<3>` literal coerces to the declared `Vec<3, m>` return.
+        let prog = parse_src("function f(): Vec<3, m>\n  return [1.0, 2.0, 3.0]\nend");
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_vec_mixed_literal_and_variable_not_coerced() {
+        // Pins that the Vec coercion guard uses `.all(is_numeric_literal)`, not
+        // `.any`: a single variable element among numeric literals blocks the
+        // whole `[...]` from coercing (a mixed list doesn't launder a variable
+        // into a unit-annotated Vec). `[1.0, b, 3.0]` synthesizes `Vec<3>` and,
+        // failing the all-literals guard, surfaces the mismatch.
+        let prog = parse_src("function f(b: Scalar): Vec<3, kg>\n  return [1.0, b, 3.0]\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3>`"
+        );
+    }
 }
