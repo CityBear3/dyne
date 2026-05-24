@@ -648,11 +648,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Pow (`^`). The exponent must be an integer literal (DD §type-checker):
-    /// - `Int ^ n` → `Int`
-    /// - `Scalar(d) ^ n` → `Scalar(d.pow(n))`
-    /// - `Vec(len, d) ^ n` → `Vec(len, d.pow(n))` (componentwise — each element
-    ///   is raised, so the per-element dimension is `d.pow(n)`; Q5/engineer
-    ///   judgment per plan Task 5)
+    /// - `Int ^ n`, `n >= 0` → `Int`; negative exponent → error (Q13: an Int
+    ///   raised to a negative power is fractional — convert to a Scalar first)
+    /// - `Scalar(d) ^ n` → `Scalar(d.pow(n))` (negative `n` is valid, e.g.
+    ///   `Scalar<s> ^ -1` → `Scalar<s^-1>`)
+    /// - `Vec(len, d) ^ n` → rejected (Q12: vector exponentiation is ambiguous;
+    ///   use `dot(v, v)` / `norm(v)` for squared magnitude)
     /// - `Mat(m, m) ^ n`, `n >= 0` → `Mat(m, m)` (square + non-negative, Q6-3);
     ///   non-square or negative (matrix inverse) → error
     ///
@@ -675,7 +676,21 @@ impl<'a> TypeChecker<'a> {
         };
 
         match base_ty {
-            Ty::Int => Ty::Int,
+            // Q13 (engineer decision): an Int raised to a negative power is
+            // fractional (e.g. 2 ^ -1 = 0.5), which Int can't represent, so a
+            // negative exponent is rejected for an Int base. (A Scalar base
+            // keeps negative exponents — see below.)
+            Ty::Int => {
+                if n < 0 {
+                    self.diagnostics.push(Diagnostic::type_error(
+                        base_span,
+                        "`^` on an Int with a negative exponent is not supported (convert to a float (Scalar) first)",
+                    ));
+                    Ty::Error
+                } else {
+                    Ty::Int
+                }
+            }
             Ty::Scalar(d) => self.pow_dim(*d, n, base_span).map_or(Ty::Error, Ty::Scalar),
             // Q12 (engineer decision): vector exponentiation is rejected —
             // it's ambiguous (componentwise vs. repeated dot product). Direct
@@ -1770,9 +1785,27 @@ mod tests {
 
     #[test]
     fn pow_int_int_returns_int() {
-        // Pow base = Int, exponent = Int → Int. Function expects Int return,
-        // so unify succeeds.
+        // Pow base = Int, non-negative exponent → Int. Function expects Int
+        // return, so unify succeeds.
         compile_src("function f(): Int\n  return 2 ^ 3\nend");
+    }
+
+    #[test]
+    fn pow_int_zero_exponent_returns_int() {
+        // Boundary: n == 0 is non-negative → Int (guards the n < 0 cutoff).
+        compile_src("function f(): Int\n  return 2 ^ 0\nend");
+    }
+
+    #[test]
+    fn int_pow_negative_rejected() {
+        // Q13: Int ^ negative is fractional (2 ^ -1 = 0.5) — rejected for an
+        // Int base. (Scalar ^ negative stays valid; see pow_scalar_negative.)
+        let diags = diags_for("function f(): Int\n  return 2 ^ -1\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "`^` on an Int with a negative exponent is not supported (convert to a float (Scalar) first)"
+        );
     }
 
     #[test]
@@ -1856,10 +1889,9 @@ mod tests {
         // Dimension::pow (the exponent 100 is itself in i8 range).
         let diags = diags_for("function f(x: Scalar<m^2>): Scalar\n  return x ^ 100\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert!(
-            diags[0].message.contains("overflow"),
-            "msg: {}",
-            diags[0].message
+        assert_eq!(
+            diags[0].message,
+            "dimension component overflow in unit expression"
         );
     }
 
