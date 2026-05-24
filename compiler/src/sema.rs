@@ -890,4 +890,70 @@ mod tests {
             panic!("expected Function, got {f_ty:?}");
         }
     }
+
+    // ----- PR-3d-β Task 10: literal-to-unit coercion (Q10, spec §4.7) -----
+    //
+    // In an expected-type context (let annotation, function param, return
+    // type) a dimensionless value (Int-promoted or float literal) coerces to
+    // the annotated `Scalar<u>`. These tests live here (not check.rs::tests)
+    // because the def_types unit-value inspection helpers (`parse_src`,
+    // `def_id_of`) are defined in this module, alongside the pr3d_alpha_* unit
+    // tests. The `.expect("clean compile")` is the red/green pivot — without
+    // the coercion these programs fail with a dimension mismatch.
+
+    #[test]
+    fn q10_let_promotes_float_literal_to_annotated_unit() {
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let m: Scalar<kg> = 1.5");
+        let typed = check(prog).expect("clean compile");
+        let m = def_id_of(&typed, "m");
+        assert_eq!(
+            *typed.def_types.get(&m).unwrap(),
+            Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_let_promotes_int_to_annotated_unit() {
+        // The spec §4.7 line-303 example (`let mass: Scalar<kg> = i`), now OK.
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let mass: Scalar<kg> = 3");
+        let typed = check(prog).expect("clean compile");
+        let m = def_id_of(&typed, "mass");
+        assert_eq!(
+            *typed.def_types.get(&m).unwrap(),
+            Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_function_arg_promotes_dimensionless_literal() {
+        let prog = parse_src(
+            "function f(x: Scalar<kg>): Scalar<kg>\n  return x\nend\nlet m: Scalar<kg> = f(2.5)",
+        );
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_function_return_promotes_dimensionless_literal() {
+        let prog = parse_src("function f(): Scalar<kg>\n  return 2.5\nend");
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_ambiguous_site_still_rejects_dim_mismatch() {
+        // No expected type is pushed into the `+`, so synth sees
+        // Scalar(ZERO) + Scalar<kg> and rejects (Task 2 Q4). The §4.7
+        // coercion applies only in expected-type contexts, not bare
+        // subexpressions. (The `let m: Scalar<kg> = 2.0` above DOES coerce.)
+        let prog =
+            parse_src("function f(): Scalar<kg>\n  let m: Scalar<kg> = 2.0\n  return 1.5 + m\nend");
+        let diags = check(prog).unwrap_err();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("dimension mismatch")),
+            "diags: {diags:?}"
+        );
+    }
 }

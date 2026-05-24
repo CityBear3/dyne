@@ -134,6 +134,23 @@ impl<'a> TypeChecker<'a> {
             return self.check_call(e, callee, args, expected);
         }
         let synthesized = self.synth_expr(e);
+        // Q10 (spec §4.7): in an expected-type context whose destination is a
+        // unit-annotated `Scalar<u>`, a dimensionless value (an `Int` or a
+        // unit-less `Scalar`) is promoted to `Scalar<u>` — the annotation
+        // fixes the unit unambiguously. The IntLit→dimensionless-Scalar
+        // widening above covers the `u == ZERO` case; this covers `u != ZERO`,
+        // and also a non-literal dimensionless source (e.g. an `Int` variable,
+        // the spec §4.7 `let mass: Scalar<kg> = i` example). Only fires when
+        // an expected type is supplied — bare subexpressions (e.g. the `+` in
+        // `1.5 + mass`) are synthesized without an expected type and still
+        // reject a dimension mismatch.
+        if let Ty::Scalar(u) = &resolved_expected
+            && !u.is_dimensionless()
+            && (matches!(synthesized, Ty::Int)
+                || matches!(&synthesized, Ty::Scalar(d) if d.is_dimensionless()))
+        {
+            return self.record(e.id, resolved_expected.clone());
+        }
         self.unify_or_diag(&synthesized, expected, e.span);
         synthesized
     }
