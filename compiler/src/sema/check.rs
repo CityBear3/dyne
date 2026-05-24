@@ -2529,6 +2529,53 @@ mod tests {
         );
     }
 
+    // The remaining dim/shape-producing success arms, completing the guarded
+    // set so a silent Ty::Error regression in ANY arithmetic/pow success arm is
+    // caught: Scalar +/- (here), Mat +/- (here), Mat ^ (here). With these,
+    // Scalar +/-/*///^, Vec */ / (and Vec +/- via vec_add_in_int_context),
+    // Mat +/-/*/^, and Mat*Vec are all guarded.
+
+    #[test]
+    fn scalar_add_wrong_return_dim_emits_diag() {
+        // `a + b` = Scalar<kg> (equal-dim success arm); reverting the
+        // Scalar-Add/Sub success arm to Ty::Error would re-break this (the
+        // kg ≠ m mismatch against the declared return would vanish).
+        let diags =
+            diags_for("function f(a: Scalar<kg>, b: Scalar<kg>): Scalar<m>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<m>`, found `Scalar<kg>`"
+        );
+    }
+
+    #[test]
+    fn mat_add_wrong_return_shape_emits_diag() {
+        // `a + b` = Mat<2, 3> (equal-shape success arm); reverting the
+        // Mat-Add/Sub success arm to Ty::Error would re-break this (the
+        // 2x3 ≠ 3x2 mismatch against the declared return would vanish).
+        let diags =
+            diags_for("function f(a: Mat<2, 3>, b: Mat<2, 3>): Mat<3, 2>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Mat<3, 2>`, found `Mat<2, 3>`"
+        );
+    }
+
+    #[test]
+    fn mat_pow_wrong_return_shape_emits_diag() {
+        // `m ^ 2` = Mat<2, 2> (square + non-negative success arm); reverting
+        // the Mat-pow success arm to Ty::Error would re-break this (the
+        // 2x2 ≠ 3x3 mismatch against the declared return would vanish).
+        let diags = diags_for("function f(m: Mat<2, 2>): Mat<3, 3>\n  return m ^ 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Mat<3, 3>`, found `Mat<2, 2>`"
+        );
+    }
+
     #[test]
     fn typed_program_types_contains_no_unresolved_vars() {
         // §1078 invariant: after check completes, no TypedProgram.types entry
