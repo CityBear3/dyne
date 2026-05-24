@@ -295,12 +295,12 @@ end
 
 ### 4.7 Type Conversion
 
-Implicit conversion from Int to dimensionless Scalar is allowed. Direct assignment to a unit-annotated Scalar is a type error. Conversion from Scalar to Int requires an explicit conversion function.
+Implicit conversion from Int to dimensionless Scalar is allowed. In an expected-type context where the destination is a unit-annotated `Scalar<u>` (let-binding with annotation, function parameter, function return type), a dimensionless value (an `Int`-promoted or float literal, typed as `Scalar` with no unit) is implicitly promoted to `Scalar<u>`; the destination annotation determines the unit unambiguously. Outside such contexts (e.g. a bare subexpression with no expected type, such as `1.5 + mass`), assignment of a dimensionless value to a unit-annotated Scalar remains a type error. Conversion from Scalar to Int requires an explicit conversion function.
 
 ```
 let i: Int = 3
 let x: Scalar = i              // OK: implicit conversion to dimensionless Scalar
-let mass: Scalar<kg> = i       // Compile error: implicit conversion to unit-annotated type
+let mass: Scalar<kg> = i       // OK: expected-type context promotes dimensionless to Scalar<kg>
 let dt: Scalar<s> = 0.01
 let t: Scalar<s> = i * dt      // OK: i -> Scalar (dimensionless), unit propagated by multiplication
 let n: Int = to_int(x)         // Explicit conversion required
