@@ -897,9 +897,9 @@ mod tests {
     // type) a dimensionless value (Int-promoted or float literal) coerces to
     // the annotated `Scalar<u>`. These tests live here (not check.rs::tests)
     // because the def_types unit-value inspection helpers (`parse_src`,
-    // `def_id_of`) are defined in this module, alongside the pr3d_alpha_* unit
-    // tests. The `.expect("clean compile")` is the red/green pivot — without
-    // the coercion these programs fail with a dimension mismatch.
+    // `def_id_of`) are defined in this module, alongside the unit-annotation
+    // dimension tests above. The `.expect("clean compile")` is the red/green
+    // pivot — without the coercion these programs fail with a dimension mismatch.
 
     #[test]
     fn q10_let_promotes_float_literal_to_annotated_unit() {
