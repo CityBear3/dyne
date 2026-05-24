@@ -273,6 +273,36 @@ fn builtin_match_option_compiles() {
     );
 }
 
+#[test]
+fn compile_builtin_option_constructor_no_var_leak() {
+    // §1078 invariant on the BUILTIN Option<T> path: `Some(1)` mints a fresh
+    // type-arg Var that the `Option<Int>` return context binds to Int. The
+    // final `resolve_deep` pass in `run()` must substitute it everywhere —
+    // including the callee node recorded before the bind — so no `Ty::Var`
+    // survives in `types`. `typed_program_types_contains_no_unresolved_vars`
+    // (check.rs) pins this for a user-defined `Maybe<T>`; this confirms the
+    // builtins-injected Option/Result constructors are resolved by the same
+    // pass, not just user-defined generics.
+    use dyne::sema::ty::Ty;
+    let typed =
+        dyne::compile("function f(): Option<Int>\n  return Some(1)\nend").expect("clean compile");
+
+    fn contains_var(t: &Ty) -> bool {
+        match t {
+            Ty::Var(_) => true,
+            Ty::Function(args, ret) => args.iter().any(contains_var) || contains_var(ret),
+            Ty::Enum(_, args) => args.iter().any(contains_var),
+            Ty::Array(t) => contains_var(t),
+            Ty::Dict(k, v) => contains_var(k) || contains_var(v),
+            _ => false,
+        }
+    }
+
+    for (id, ty) in typed.types.iter() {
+        assert!(!contains_var(ty), "Ty::Var leaked at {id:?}: {ty:?}");
+    }
+}
+
 // ----- PR-3c Task 8: end-to-end + carry regressions -----
 
 #[test]

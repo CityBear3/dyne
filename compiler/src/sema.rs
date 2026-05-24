@@ -1043,4 +1043,29 @@ mod tests {
             "type mismatch: expected `Vec<3, m>`, found `Vec<3>`"
         );
     }
+
+    #[test]
+    fn q10_struct_field_promotes_literal() {
+        // A struct-field initializer is an expected-type context routed
+        // through `check_expr`, so a numeric literal coerces to the field's
+        // unit-annotated type — the same chokepoint as let / param / return.
+        let prog = parse_src("struct Body\n  m: Scalar<kg>\nend\nlet b: Body = Body { m: 1.5 }");
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_struct_field_variable_not_coerced() {
+        // Q10-refinement: a dimensionless VARIABLE in a unit-annotated struct
+        // field is rejected (literal-only), consistent with the let / param /
+        // return contexts.
+        let prog = parse_src(
+            "struct Body\n  m: Scalar<kg>\nend\nfunction f(g: Scalar): Body\n  return Body { m: g }\nend",
+        );
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<kg>`, found `Scalar`"
+        );
+    }
 }
