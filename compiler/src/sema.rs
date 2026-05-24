@@ -1068,4 +1068,36 @@ mod tests {
             "type mismatch: expected `Scalar<kg>`, found `Scalar`"
         );
     }
+
+    #[test]
+    fn q10_vec_variable_elements_not_coerced() {
+        // I1: a `VecLit` whose ELEMENTS are dimensionless variables must NOT
+        // coerce to a unit-annotated `Vec` — only a `[...]` of numeric literals
+        // does. Without the element check, `[a, b, c]` would launder variables
+        // into `Vec<3, kg>`, the same hole the scalar side closes. Symmetric
+        // with `q10_dimensionless_scalar_variable_not_coerced`.
+        let prog = parse_src(
+            "function f(a: Scalar, b: Scalar, c: Scalar): Vec<3, kg>\n  return [a, b, c]\nend",
+        );
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3>`"
+        );
+    }
+
+    #[test]
+    fn q10_negated_literal_coerces() {
+        // M1: pins the `UnaryOp(Neg, FloatLit)` arm of `is_numeric_literal` —
+        // a negated numeric literal still coerces to the annotated unit.
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let g: Scalar<m> = -9.8");
+        let typed = check(prog).expect("clean compile");
+        let g = def_id_of(&typed, "g");
+        assert_eq!(
+            *typed.def_types.get(&g).unwrap(),
+            Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+    }
 }

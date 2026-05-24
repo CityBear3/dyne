@@ -155,11 +155,14 @@ impl<'a> TypeChecker<'a> {
         // boundary. Only fires when an expected type is supplied — bare
         // subexpressions (e.g. the `+` in `1.5 + mass`) are synthesized
         // without an expected type and still reject a dimension mismatch.
+        //
+        // The `is_numeric_literal(e)` gate is sufficient on its own: a numeric
+        // literal always synthesizes to `Int` or a dimensionless `Scalar`
+        // (literals carry no unit), so no separate synthesized-type check is
+        // needed to know the source is dimensionless.
         if let Ty::Scalar(u) = &resolved_expected
             && !u.is_dimensionless()
             && is_numeric_literal(e)
-            && (matches!(synthesized, Ty::Int)
-                || matches!(&synthesized, Ty::Scalar(d) if d.is_dimensionless()))
         {
             return self.record(e.id, resolved_expected.clone());
         }
@@ -170,11 +173,15 @@ impl<'a> TypeChecker<'a> {
         // unit-less source coerces (`Vec<n, m>` → `Vec<n, kg>` stays a
         // mismatch). No Int→Vec promotion: there is no scalar-to-vector widen.
         //
-        // Q10-refinement: LITERAL-ONLY here too — only a `VecLit` (`[...]`)
-        // coerces; a dimensionless `Vec` variable falls through and rejects.
+        // Q10-refinement: LITERAL-ONLY here too, and (unlike a scalar literal)
+        // a `VecLit`'s *elements* are checked individually — every element
+        // must be a numeric literal. `[1.0, 2.0, 3.0]` coerces; `[a, b, c]`
+        // (dimensionless `Scalar` variables) does NOT — otherwise it would
+        // launder variables into a unit-annotated `Vec`, the same hole the
+        // scalar side closes.
         if let Ty::Vec(en, eu) = &resolved_expected
             && !eu.is_dimensionless()
-            && matches!(e.kind, ExprKind::VecLit(_))
+            && matches!(&e.kind, ExprKind::VecLit(elems) if elems.iter().all(is_numeric_literal))
             && let Ty::Vec(sn, sd) = &synthesized
             && sn == en
             && sd.is_dimensionless()
