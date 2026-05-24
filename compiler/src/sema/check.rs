@@ -1372,6 +1372,17 @@ pub(crate) fn run(
     // — run after every body is checked, so all bindings are in place —
     // guarantees `TypedProgram.types` carries no unresolved `Var`. Resolving
     // at record time would miss any Var bound after the record.
+    //
+    // Invariant assumption: every `Var` is bound by end-of-check. This holds
+    // given dyne's mandatory annotations (let / param / return types are
+    // never inferred) + per-use-site Var minting (`instantiate_variant_schema`
+    // mints a fresh batch per constructor reference, each constrained by its
+    // call), so no Var escapes under-constrained in well-formed input. A
+    // genuinely-unbound residual Var (an under-constrained generic that no
+    // context pins) would be left as-is here, NOT diagnosed — emitting an
+    // "ambiguous type / annotation needed" diagnostic for residual Vars is
+    // deferred to PR-3e+. `resolve_deep` returns such a Var unchanged, so the
+    // worst case is an unresolved Var in `types`, never a panic or hang.
     let resolved_types = tc
         .types
         .iter()

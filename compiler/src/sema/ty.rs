@@ -1,9 +1,12 @@
 //! Type representation for the sema phase.
 //!
-//! Populated incrementally through Stage 3:
+//! Populated incrementally through Stage 3 (chronological):
 //! - PR-3b: `Ty` enum, `Dimension` stub (ZERO only), `TypeVarId`, `lower_type`
-//! - PR-3d: `Dimension` arithmetic (mul, div, pow), unit propagation through operators
 //! - PR-3c: enum type-argument instantiation via `TypeVarId`
+//! - PR-3d-α: real `Dimension` via `eval_unit_expr` + `UnitRegistry`;
+//!   `lower_scalar` / `lower_vec` carry real dims from annotations
+//! - PR-3d-β: operator dimension propagation (`mul` / `div` / `pow`);
+//!   literal-to-unit coercion; Mat·Vec / Mat·Mat real shape rules
 
 use std::collections::HashMap;
 
