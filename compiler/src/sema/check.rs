@@ -677,9 +677,16 @@ impl<'a> TypeChecker<'a> {
         match base_ty {
             Ty::Int => Ty::Int,
             Ty::Scalar(d) => self.pow_dim(*d, n, base_span).map_or(Ty::Error, Ty::Scalar),
-            Ty::Vec(len, d) => self
-                .pow_dim(*d, n, base_span)
-                .map_or(Ty::Error, |nd| Ty::Vec(*len, nd)),
+            // Q12 (engineer decision): vector exponentiation is rejected —
+            // it's ambiguous (componentwise vs. repeated dot product). Direct
+            // users to `dot(v, v)` / `norm(v)` for squared magnitude.
+            Ty::Vec(_, _) => {
+                self.diagnostics.push(Diagnostic::type_error(
+                    base_span,
+                    "`^` on a Vec is not supported (vector exponentiation is ambiguous; use dot(v, v) or norm(v) for squared magnitude)",
+                ));
+                Ty::Error
+            }
             Ty::Mat(m, cols) => {
                 // Q6-3: square + non-negative only.
                 if m != cols {
@@ -707,7 +714,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Raise a `Dimension` to an integer power for `^` (Scalar/Vec base).
+    /// Raise a `Dimension` to an integer power for a `Scalar` base under `^`.
     /// Narrows the exponent to `i8` (out-of-range → `unit_exponent_out_of_range`)
     /// then applies `Dimension::pow` (component overflow → `dimension_overflow`).
     /// Returns `None` (with a diag pushed) on either failure.
@@ -1503,6 +1510,9 @@ mod tests {
     // Mat/Mat, and other unsupported Mat operand combinations (Task 4).
     const MAT_REJECT_MSG: &str = "Mat operation not supported for these operands (Mat +/- Mat requires equal shape; Mat * Mat, Mat * Vec, and Mat scaled by a dimensionless Scalar are supported; matrix division/inverse and Vec * Mat are not)";
 
+    // The Vec-exponentiation reject message (Q12), shared by the pow Vec tests.
+    const POW_VEC_REJECT_MSG: &str = "`^` on a Vec is not supported (vector exponentiation is ambiguous; use dot(v, v) or norm(v) for squared magnitude)";
+
     #[test]
     fn vec_mul_vec_rejected_diag() {
         // Q5-1: Vec*Vec rejected (use dot()/cross()).
@@ -1804,11 +1814,12 @@ mod tests {
     }
 
     #[test]
-    fn pow_vec_componentwise_propagates_dim() {
-        // Q5/engineer judgment: Vec<3, m> ^ 2 → Vec<3, m^2> (each component
-        // raised, so the per-element dimension is m^2). α stripped this to
-        // Vec<3> (dimensionless); now the unit propagates.
-        compile_src("function f(v: Vec<3, m>): Vec<3, m^2>\n  return v ^ 2\nend");
+    fn pow_vec_rejected_diag() {
+        // Q12 (engineer decision): vector exponentiation is rejected as
+        // ambiguous. `v ^ 2` → reject (use dot()/norm() for squared magnitude).
+        let diags = diags_for("function f(v: Vec<3, m>): Vec<3, m>\n  return v ^ 2\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, POW_VEC_REJECT_MSG);
     }
 
     #[test]
@@ -2232,20 +2243,14 @@ mod tests {
 
     #[test]
     fn vec_pow_in_int_context_emits_diag() {
-        // G2 (broader scope): `synth_pow`'s Vec/Mat arm previously
-        // returned `Ty::Error`, silently swallowing cross-context
-        // mismatches. After the fix, `Vec ^ Int` returns the input Vec
-        // shape so the function's `Int` return type triggers an accurate
-        // "expected Int, found Vec<3>" diagnostic. dyne uses `^` for
-        // power; reverting the synth_pow Vec/Mat arms to early-return
-        // `Ty::Error` would re-break this.
+        // Originally a placeholder-seam pin (synth_pow stripped Vec dim and
+        // let the Int-return context surface the mismatch). PR-3d-β Task 5 +
+        // Q12 reject Vec exponentiation outright, so the single diag now comes
+        // from the `^`-on-Vec reject path (and return-type unify suppresses on
+        // Ty::Error — no cascade).
         let diags = diags_for("function f(v: Vec<3>): Int\n  return v ^ 2\nend");
-        assert_eq!(diags.len(), 1, "diags: {:?}", diags);
-        assert!(
-            diags[0].message.contains("Int") && diags[0].message.contains("Vec"),
-            "msg: {}",
-            diags[0].message
-        );
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, POW_VEC_REJECT_MSG);
     }
 
     #[test]
