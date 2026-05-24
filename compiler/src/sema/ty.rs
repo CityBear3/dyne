@@ -1184,6 +1184,69 @@ mod tests {
         assert_eq!(two.pow(-128), Err(OverflowError));
     }
 
+    // `mul` is pointwise checked_add; `div` is pointwise checked_sub.
+    // Boundary tests parallel to `dimension_pow_at_i8_*` above.
+
+    #[test]
+    fn dimension_mul_at_i8_max_boundary_succeeds() {
+        // 127 + 0 = 127 — exactly i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_mul_overflows_just_above_max() {
+        // 127 + 1 = 128 — overflows i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(b), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_mul_at_i8_min_boundary_succeeds() {
+        // -128 + 0 = -128 — exactly i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_mul_underflows_just_below_min() {
+        // -128 + -1 = -129 — underflows i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([-1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(b), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_div_at_i8_max_boundary_succeeds() {
+        // 127 - 0 = 127 — exactly i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_div_overflows_just_above_max() {
+        // 127 - (-1) = 128 — overflows i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([-1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(b), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_div_at_i8_min_boundary_succeeds() {
+        // -128 - 0 = -128 — exactly i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_div_underflows_just_below_min() {
+        // -128 - 1 = -129 — underflows i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(b), Err(OverflowError));
+    }
+
     #[test]
     fn format_si_dimensionless_is_one() {
         assert_eq!(Dimension::ZERO.format_si(), "1");

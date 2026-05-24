@@ -1695,8 +1695,11 @@ mod tests {
     #[test]
     fn mat_mul_vec_arm_order_placeholder_replaced() {
         // PR-3c CQ Minor: the PR-3b placeholder returned a Mat shape for
-        // Mat·Vec. Q6 replaces it with the correct Vec result.
-        compile_src("function f(m: Mat<3, 3>, v: Vec<3>): Vec<3>\n  return m * v\nend");
+        // Mat·Vec. Q6 replaces it with the correct Vec result. Rectangular
+        // (Mat<2,3> * Vec<3> → Vec<2>) so the test is self-contained to its
+        // name: a Mat<2,3>-shaped result would NOT unify with the Vec<2>
+        // return, proving the arm yields Vec<m>, not the Mat shape.
+        compile_src("function f(m: Mat<2, 3>, v: Vec<3>): Vec<2>\n  return m * v\nend");
     }
 
     #[test]
@@ -1730,6 +1733,19 @@ mod tests {
         assert_eq!(
             diags[0].message,
             "dimension mismatch in '*': left side has Mat<2, 2>, but right side has Scalar<m*s^-1>"
+        );
+    }
+
+    #[test]
+    fn scalar_with_dim_mul_mat_rejected_diag() {
+        // Commutative-order mirror of mat_mul_scalar_with_dim_rejected_diag:
+        // Scalar<m/s> * Mat is also rejected (Mat must stay dimensionless).
+        let diags =
+            diags_for("function f(m: Mat<2, 2>, s: Scalar<m/s>): Mat<2, 2>\n  return s * m\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '*': left side has Scalar<m*s^-1>, but right side has Mat<2, 2>"
         );
     }
 

@@ -776,7 +776,7 @@ mod tests {
     // these tests pin.
 
     #[test]
-    fn pr3d_alpha_scalar_kg_annotation_carries_kg_dimension() {
+    fn scalar_kg_annotation_carries_kg_dimension() {
         use crate::sema::ty::{Dimension, Ty};
 
         let prog = parse_src("function f(x: Scalar<kg>): Scalar<kg>\n  return x\nend");
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_meters_per_second_carries_compound_dimension() {
+    fn scalar_meters_per_second_carries_compound_dimension() {
         use crate::sema::ty::{Dimension, Ty};
 
         let prog = parse_src("function f(x: Scalar<m/s>): Scalar<m/s>\n  return x\nend");
@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_vec_with_unit_carries_dimension() {
+    fn vec_with_unit_carries_dimension() {
         use crate::sema::ty::{Dimension, Ty};
 
         let prog = parse_src("function f(v: Vec<3, m/s>): Vec<3, m/s>\n  return v\nend");
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_top_level_mul_carries_dimension() {
+    fn scalar_top_level_mul_carries_dimension() {
         // Parser-seam pin (TC-IMP3): top-level Mul in unit position.
         // `Scalar<kg*m>` exercises UnitExpr::Mul(Atom(kg), Atom(m))
         // through parser → lower_scalar → eval_unit_expr.
@@ -849,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_top_level_pow_carries_dimension() {
+    fn scalar_top_level_negative_pow_carries_dimension() {
         // Parser-seam pin (TC-IMP3): top-level Pow in unit position.
         // `Scalar<s^-2>` exercises UnitExpr::Pow(Atom(s), -2)
         // through parser → lower_scalar → eval_unit_expr.
@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_compound_force_unit_carries_dimension() {
+    fn scalar_newton_carries_compound_dimension() {
         // Parser-seam pin (TC-IMP3): compound unit with Mul + Div + Pow.
         // `Scalar<kg*m/s^2>` is the canonical force unit (Newton in base
         // form). Exercises UnitExpr::Div(Mul(kg, m), Pow(s, 2)) through
@@ -964,6 +964,20 @@ mod tests {
         assert_eq!(
             diags[0].message,
             "type mismatch: expected `Vec<3, kg>`, found `Vec<3, m>`"
+        );
+    }
+
+    #[test]
+    fn q10_vec_shape_mismatch_not_coerced() {
+        // The coercion requires matching length (sn == en). A length-2 vec
+        // literal against `Vec<3, m>` fails the guard → no coercion → the
+        // shape mismatch surfaces.
+        let prog = parse_src("let v: Vec<3, m> = [1.0, 2.0]");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, m>`, found `Vec<2>`"
         );
     }
 

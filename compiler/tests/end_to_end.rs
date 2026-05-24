@@ -603,12 +603,39 @@ fn compile_dim_mismatch_in_addition_diag() {
 #[test]
 fn compile_kinetic_energy_formula() {
     // E_k = 0.5 * m * v^2, m: Scalar<kg>, v: Scalar<m/s>.
-    // kg * (m/s)^2 = kg*m^2/s^2 = J.
-    let src = "function f(): Scalar<J>\n  let m: Scalar<kg> = 1.5\n  let v: Scalar<m/s> = 10.0\n  let half: Scalar = 0.5\n  return half * m * v ^ 2\nend";
+    // kg * (m/s)^2 = kg*m^2/s^2 = J. The `0.5` literal is inline (a
+    // dimensionless Scalar in the multiplication), reading as the physics
+    // formula does.
+    let src = "function f(): Scalar<J>\n  let m: Scalar<kg> = 1.5\n  let v: Scalar<m/s> = 10.0\n  return 0.5 * m * v ^ 2\nend";
     assert!(
         dyne::compile(src).is_ok(),
         "kinetic energy formula should type-check (kg * (m/s)^2 = J); diags: {:?}",
         dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_vec_exponentiation_rejected() {
+    // Q12 (user-facing): `v ^ 2` on a Vec is rejected end-to-end.
+    let src = "function f(v: Vec<3>): Vec<3>\n  return v ^ 2\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message
+            == "`^` on a Vec is not supported (vector exponentiation is ambiguous; use dot(v, v) or norm(v) for squared magnitude)"),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_int_negative_exponent_rejected() {
+    // Q13 (user-facing): an Int raised to a negative power is rejected
+    // end-to-end (fractional result Int can't represent).
+    let src = "function f(): Int\n  return 2 ^ -1\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message
+            == "`^` on an Int with a negative exponent is not supported (convert to a float (Scalar) first)"),
+        "diags: {diags:?}"
     );
 }
 

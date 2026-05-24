@@ -257,11 +257,12 @@ mod tests {
     #[test]
     fn vec_with_unit() {
         let t = parse("Vec<3, m/s>");
-        if let TypeKind::Generic(_, args) = t.kind {
-            assert_eq!(args.len(), 2);
-            assert!(matches!(args[0], crate::ast::TypeArg::Int(3)));
-            assert!(matches!(args[1], crate::ast::TypeArg::Unit(_)));
-        }
+        let TypeKind::Generic(_, args) = t.kind else {
+            panic!("expected Generic, got {:?}", t.kind);
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[0], crate::ast::TypeArg::Int(3)));
+        assert!(matches!(args[1], crate::ast::TypeArg::Unit(_)));
     }
 
     #[test]
