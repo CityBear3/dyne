@@ -1081,15 +1081,22 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-/// Q4 Step 1: in a mixed `Int` / `Scalar` binary op, the `Int` operand
-/// promotes to a dimensionless `Scalar` so the Scalar rules handle it
-/// uniformly. `Int + Scalar<kg>` thus becomes `Scalar + Scalar<kg>` →
-/// `dimension_mismatch` (Q4-1), while `Int + Scalar` (dimensionless)
-/// succeeds. Non-mixed pairs pass through unchanged.
+/// Q4 Step 1 (+ Q11): in a mixed binary op, an `Int` operand promotes to a
+/// dimensionless `Scalar` so the Scalar/Vec rules handle it uniformly:
+/// - `Int op Scalar` → `Scalar + Scalar<kg>` so `Int + Scalar<kg>` becomes a
+///   `dimension_mismatch` (Q4-1) while `Int + Scalar` (dimensionless) succeeds.
+/// - `Int op Vec` (Q11=A: Int scales Vec) → `Scalar op Vec`, so `2 * v` /
+///   `v * 2` / `v / 2` route through the commutative `Vec * Scalar` and
+///   `Vec / Scalar` arms (`ZERO.mul(d)=d`, `d.div(ZERO)=d`, leaving the unit
+///   unchanged); `2 + v` falls through to the Vec reject arm as `Scalar + Vec`.
+///
+/// `Int op Mat` is intentionally NOT promoted here — Mat rules are a
+/// placeholder until Task 4, which extends this for `Mat` scaling.
+/// Non-mixed pairs pass through unchanged.
 fn promote_int_to_scalar(l: &Ty, r: &Ty) -> (Ty, Ty) {
     match (l, r) {
-        (Ty::Int, Ty::Scalar(_)) => (Ty::Scalar(Dimension::ZERO), r.clone()),
-        (Ty::Scalar(_), Ty::Int) => (l.clone(), Ty::Scalar(Dimension::ZERO)),
+        (Ty::Int, Ty::Scalar(_) | Ty::Vec(_, _)) => (Ty::Scalar(Dimension::ZERO), r.clone()),
+        (Ty::Scalar(_) | Ty::Vec(_, _), Ty::Int) => (l.clone(), Ty::Scalar(Dimension::ZERO)),
         _ => (l.clone(), r.clone()),
     }
 }
@@ -1363,6 +1370,35 @@ mod tests {
         let diags = diags_for("function f(v: Vec<3>, s: Scalar): Vec<3>\n  return s / v\nend");
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
         assert_eq!(diags[0].message, VEC_REJECT_MSG);
+    }
+
+    // Q11=A: Int scales Vec (promotes to dimensionless Scalar). Scaling by a
+    // dimensionless factor leaves the unit unchanged, so the result is the
+    // input Vec type — pinned via the return-type unification trick.
+
+    #[test]
+    fn int_mul_vec_scales_unit_unchanged() {
+        // 2 * v : Int promotes to Scalar(ZERO); ZERO.mul(m) = m → Vec<3, m>.
+        compile_src("function f(v: Vec<3, m>): Vec<3, m>\n  return 2 * v\nend");
+    }
+
+    #[test]
+    fn vec_mul_int_scales_unit_unchanged() {
+        // v * 2 : m.mul(ZERO) = m → Vec<3, m>.
+        compile_src("function f(v: Vec<3, m>): Vec<3, m>\n  return v * 2\nend");
+    }
+
+    #[test]
+    fn vec_div_int_scales_unit_unchanged() {
+        // v / 2 : m.div(ZERO) = m → Vec<3, m> (dimensionless divisor).
+        compile_src("function f(v: Vec<3, m>): Vec<3, m>\n  return v / 2\nend");
+    }
+
+    #[test]
+    fn scalar_mul_vec_still_works_regression() {
+        // Regression: a Scalar (float literal) scaling a Vec is unchanged by
+        // the Int-promotion extension — 2.0 * v still yields Vec<3, m>.
+        compile_src("function f(v: Vec<3, m>): Vec<3, m>\n  return 2.0 * v\nend");
     }
 
     #[test]
