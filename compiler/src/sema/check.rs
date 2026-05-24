@@ -1489,6 +1489,17 @@ mod tests {
         compile_src("function f(v: Vec<3, m>): Vec<3, m>\n  return 2.0 * v\nend");
     }
 
+    #[test]
+    fn int_plus_vec_rejected() {
+        // Q11=A is multiplicative-only: Int *scales* a Vec, it does not add
+        // to it. `2 + v` promotes the Int to Scalar(ZERO), then Scalar + Vec
+        // hits the Vec reject arm (no broadcasting). Pins the additive
+        // boundary explicitly.
+        let diags = diags_for("function f(v: Vec<3>): Vec<3>\n  return 2 + v\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, VEC_REJECT_MSG);
+    }
+
     // ----- PR-3d-β Task 4: synth_arith Mat rules (Q6) + Int+Mat scaling -----
     //
     // Mat is dimensionless (spec §4.4). Operands via params (Mat/Vec literal
@@ -1615,6 +1626,15 @@ mod tests {
     fn scalar_mul_mat_still_works_regression() {
         // 2.0 * m (Scalar * Mat, commutative) still yields Mat<2, 2>.
         compile_src("function f(m: Mat<2, 2>): Mat<2, 2>\n  return 2.0 * m\nend");
+    }
+
+    #[test]
+    fn int_plus_mat_rejected() {
+        // Q11=A multiplicative-only boundary for Mat: `2 + m` promotes the
+        // Int to Scalar(ZERO), then Scalar + Mat hits the Mat reject arm.
+        let diags = diags_for("function f(m: Mat<2, 2>): Mat<2, 2>\n  return 2 + m\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, MAT_REJECT_MSG);
     }
 
     #[test]
