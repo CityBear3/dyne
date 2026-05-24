@@ -941,19 +941,47 @@ mod tests {
     }
 
     #[test]
+    fn q10_let_promotes_vec_literal() {
+        // Vec extension: a dimensionless `Vec<3>` literal promotes to the
+        // annotated `Vec<3, m>` (same length).
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let v: Vec<3, m> = [1.0, 2.0, 3.0]");
+        let typed = check(prog).expect("clean compile");
+        let v = def_id_of(&typed, "v");
+        assert_eq!(
+            *typed.def_types.get(&v).unwrap(),
+            Ty::Vec(3, Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_vec_dim_carrying_not_coerced() {
+        // Guard symmetry: a dim-CARRYING Vec source does NOT coerce to a
+        // different unit — `Vec<3, m>` against `Vec<3, kg>` stays a mismatch.
+        let prog = parse_src("function f(v: Vec<3, m>): Vec<3, kg>\n  return v\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3, m>`"
+        );
+    }
+
+    #[test]
     fn q10_ambiguous_site_still_rejects_dim_mismatch() {
         // No expected type is pushed into the `+`, so synth sees
         // Scalar(ZERO) + Scalar<kg> and rejects (Task 2 Q4). The §4.7
         // coercion applies only in expected-type contexts, not bare
-        // subexpressions. (The `let m: Scalar<kg> = 2.0` above DOES coerce.)
+        // subexpressions — this pins that the coercion does NOT leak into
+        // synth_arith's operand path. (The `let m: Scalar<kg> = 2.0` DOES
+        // coerce — a separate, valid expected-type context.)
         let prog =
             parse_src("function f(): Scalar<kg>\n  let m: Scalar<kg> = 2.0\n  return 1.5 + m\nend");
         let diags = check(prog).unwrap_err();
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("dimension mismatch")),
-            "diags: {diags:?}"
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '+': left side has Scalar, but right side has Scalar<kg>"
         );
     }
 }

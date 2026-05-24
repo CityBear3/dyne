@@ -151,6 +151,20 @@ impl<'a> TypeChecker<'a> {
         {
             return self.record(e.id, resolved_expected.clone());
         }
+        // Q10 (Vec): the same expected-type-context promotion for a
+        // dimensionless `Vec<n>` literal whose destination is `Vec<n, u>`
+        // (u != ZERO) — e.g. `let v: Vec<3, m/s> = [1.0, 2.0, 3.0]`. The
+        // length must match (a shape mismatch still diagnoses), and only a
+        // unit-less source coerces (`Vec<n, m>` → `Vec<n, kg>` stays a
+        // mismatch). No Int→Vec promotion: there is no scalar-to-vector widen.
+        if let Ty::Vec(en, eu) = &resolved_expected
+            && !eu.is_dimensionless()
+            && let Ty::Vec(sn, sd) = &synthesized
+            && sn == en
+            && sd.is_dimensionless()
+        {
+            return self.record(e.id, resolved_expected.clone());
+        }
         self.unify_or_diag(&synthesized, expected, e.span);
         synthesized
     }
