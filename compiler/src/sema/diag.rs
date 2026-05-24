@@ -245,6 +245,22 @@ pub fn shape_mismatch_vec(span: Span, left_len: usize, right_len: usize) -> Diag
     )
 }
 
+/// Reported when a `Mat`-involving binary op has incompatible operand shapes:
+/// `Mat +/- Mat` of different dimensions, a `Mat * Mat` whose inner dims
+/// disagree, or a `Mat * Vec` whose column count ≠ the Vec length. Operator-
+/// focus (like [`dimension_mismatch`]): names the op and renders both operands
+/// via `format_ty` so the offending shapes are visible.
+pub fn shape_mismatch_mat(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "shape mismatch in '{op}': left side has {}, but right side has {}",
+            format_ty(lhs),
+            format_ty(rhs),
+        ),
+    )
+}
+
 /// Render a `Ty` for diagnostic messages. Dim-carrying `Scalar` / `Vec`
 /// render their SI unit via [`Dimension::format_si`] (e.g. `Scalar<kg>`,
 /// `Vec<3, m*s^-1>`); dimensionless ones elide the unit (`Scalar`,

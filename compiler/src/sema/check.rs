@@ -498,10 +498,87 @@ impl<'a> TypeChecker<'a> {
                 }
             },
 
-            // Mat: PR-3b/3c placeholder (shape preserved). Mat takes
-            // precedence over Vec when both appear (so Mat·Vec stays on the
-            // placeholder until Task 4's Q6 rules land). Replaced in Task 4.
-            (_, Ty::Mat(m, n), _) | (_, _, Ty::Mat(m, n)) => Ty::Mat(*m, *n),
+            // Q6: Mat rules. Mat is dimensionless per spec §4.4. Placed
+            // before the Vec arms so any Mat-involving pair is resolved here
+            // (so e.g. Vec * Mat is rejected, not mistaken for a Vec op).
+
+            // Mat +/- Mat: same shape required.
+            (BinOp::Add | BinOp::Sub, Ty::Mat(m1, n1), Ty::Mat(m2, n2)) => {
+                if m1 == m2 && n1 == n2 {
+                    Ty::Mat(*m1, *n1)
+                } else {
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch_mat(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
+                    Ty::Error
+                }
+            }
+
+            // Mat * Mat: Mat<m,n> * Mat<n,p> → Mat<m,p> (inner dims must match).
+            (BinOp::Mul, Ty::Mat(m, n1), Ty::Mat(n2, p)) => {
+                if n1 == n2 {
+                    Ty::Mat(*m, *p)
+                } else {
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch_mat(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
+                    Ty::Error
+                }
+            }
+
+            // Mat * Vec: Mat<m,n> * Vec<n,d> → Vec<m,d> (Mat dimensionless,
+            // Vec dim transparent). REPLACES the PR-3b placeholder that
+            // returned Mat<m,n> for this case (PR-3c CQ Minor; Q6-4).
+            (BinOp::Mul, Ty::Mat(m, n1), Ty::Vec(n2, d)) => {
+                if n1 == n2 {
+                    Ty::Vec(*m, *d)
+                } else {
+                    self.diagnostics.push(crate::sema::diag::shape_mismatch_mat(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
+                    Ty::Error
+                }
+            }
+
+            // Mat * Scalar / Scalar * Mat (commutative) and Mat / Scalar: the
+            // Scalar must be dimensionless (Mat stays dimensionless). Q11=A's
+            // Int-promoted Scalar(ZERO) is dimensionless, so `2 * m`, `m * 2`,
+            // `m / 2` scale cleanly; a dim-carrying Scalar → dimension_mismatch.
+            (BinOp::Mul, Ty::Mat(m, n), Ty::Scalar(d))
+            | (BinOp::Mul, Ty::Scalar(d), Ty::Mat(m, n))
+            | (BinOp::Div, Ty::Mat(m, n), Ty::Scalar(d)) => {
+                if d.is_dimensionless() {
+                    Ty::Mat(*m, *n)
+                } else {
+                    self.diagnostics.push(crate::sema::diag::dimension_mismatch(
+                        l_span,
+                        op_symbol(op),
+                        &l_eff,
+                        &r_eff,
+                    ));
+                    Ty::Error
+                }
+            }
+
+            // Every other Mat involvement is rejected: Vec * Mat (Q6-2),
+            // Mat / Mat (matrix inverse deferred), Scalar / Mat, Mat +/- Vec,
+            // Mat +/- Scalar, etc.
+            (_, Ty::Mat(_, _), _) | (_, _, Ty::Mat(_, _)) => {
+                self.diagnostics.push(crate::sema::diag::type_mismatch(
+                    l_span,
+                    "Mat operation not supported for these operands (Mat +/- Mat requires equal shape; Mat * Mat, Mat * Vec, and Mat scaled by a dimensionless Scalar are supported; matrix division/inverse and Vec * Mat are not)",
+                ));
+                Ty::Error
+            }
 
             // Q5: Vec rules.
             //
@@ -1090,13 +1167,20 @@ impl<'a> TypeChecker<'a> {
 ///   `Vec / Scalar` arms (`ZERO.mul(d)=d`, `d.div(ZERO)=d`, leaving the unit
 ///   unchanged); `2 + v` falls through to the Vec reject arm as `Scalar + Vec`.
 ///
-/// `Int op Mat` is intentionally NOT promoted here — Mat rules are a
-/// placeholder until Task 4, which extends this for `Mat` scaling.
+/// - `Int op Mat` (Q11=A: Int scales Mat) → `Scalar op Mat`, so `2 * m` /
+///   `m * 2` / `m / 2` route through the commutative `Mat * Scalar` and
+///   `Mat / Scalar` arms (a dimensionless `Scalar(ZERO)` is admitted because
+///   `Mat` is dimensionless per spec §4.4); `m + 2` falls to the Mat reject.
+///
 /// Non-mixed pairs pass through unchanged.
 fn promote_int_to_scalar(l: &Ty, r: &Ty) -> (Ty, Ty) {
     match (l, r) {
-        (Ty::Int, Ty::Scalar(_) | Ty::Vec(_, _)) => (Ty::Scalar(Dimension::ZERO), r.clone()),
-        (Ty::Scalar(_) | Ty::Vec(_, _), Ty::Int) => (l.clone(), Ty::Scalar(Dimension::ZERO)),
+        (Ty::Int, Ty::Scalar(_) | Ty::Vec(_, _) | Ty::Mat(_, _)) => {
+            (Ty::Scalar(Dimension::ZERO), r.clone())
+        }
+        (Ty::Scalar(_) | Ty::Vec(_, _) | Ty::Mat(_, _), Ty::Int) => {
+            (l.clone(), Ty::Scalar(Dimension::ZERO))
+        }
         _ => (l.clone(), r.clone()),
     }
 }
@@ -1348,6 +1432,10 @@ mod tests {
     // rejection cases below (Vec*Vec, Vec+Scalar broadcasting, Scalar/Vec).
     const VEC_REJECT_MSG: &str = "Vec operation not supported for these operands (Vec +/- Vec requires equal shape and dimension; use dot()/cross() for vector products; Vec scales by Scalar only)";
 
+    // The unsupported-Mat-operation reject message, shared by Vec*Mat,
+    // Mat/Mat, and other unsupported Mat operand combinations (Task 4).
+    const MAT_REJECT_MSG: &str = "Mat operation not supported for these operands (Mat +/- Mat requires equal shape; Mat * Mat, Mat * Vec, and Mat scaled by a dimensionless Scalar are supported; matrix division/inverse and Vec * Mat are not)";
+
     #[test]
     fn vec_mul_vec_rejected_diag() {
         // Q5-1: Vec*Vec rejected (use dot()/cross()).
@@ -1399,6 +1487,134 @@ mod tests {
         // Regression: a Scalar (float literal) scaling a Vec is unchanged by
         // the Int-promotion extension — 2.0 * v still yields Vec<3, m>.
         compile_src("function f(v: Vec<3, m>): Vec<3, m>\n  return 2.0 * v\nend");
+    }
+
+    // ----- PR-3d-β Task 4: synth_arith Mat rules (Q6) + Int+Mat scaling -----
+    //
+    // Mat is dimensionless (spec §4.4). Operands via params (Mat/Vec literal
+    // checking + Task-10 coercion are out of scope here). Diag messages are
+    // pinned via assert_eq!.
+
+    #[test]
+    fn mat_add_same_shape_returns_mat() {
+        compile_src("function f(a: Mat<2, 2>, b: Mat<2, 2>): Mat<2, 2>\n  return a + b\nend");
+    }
+
+    #[test]
+    fn mat_add_shape_mismatch_diag() {
+        let diags =
+            diags_for("function f(a: Mat<2, 2>, b: Mat<3, 3>): Mat<2, 2>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "shape mismatch in '+': left side has Mat<2, 2>, but right side has Mat<3, 3>"
+        );
+    }
+
+    #[test]
+    fn mat_mul_mat_compatible_shapes_returns_mat() {
+        // Mat<2,3> * Mat<3,4> → Mat<2,4>.
+        compile_src("function f(a: Mat<2, 3>, b: Mat<3, 4>): Mat<2, 4>\n  return a * b\nend");
+    }
+
+    #[test]
+    fn mat_mul_mat_shape_mismatch_diag() {
+        // Inner dims disagree (3 cols vs 2 rows).
+        let diags =
+            diags_for("function f(a: Mat<2, 3>, b: Mat<2, 4>): Mat<2, 4>\n  return a * b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "shape mismatch in '*': left side has Mat<2, 3>, but right side has Mat<2, 4>"
+        );
+    }
+
+    #[test]
+    fn mat_mul_vec_returns_vec_with_dim_through() {
+        // Mat<2,3> * Vec<3, m/s> → Vec<2, m/s> (Mat dimensionless, Vec dim
+        // transparent).
+        compile_src("function f(m: Mat<2, 3>, v: Vec<3, m/s>): Vec<2, m/s>\n  return m * v\nend");
+    }
+
+    #[test]
+    fn mat_mul_vec_arm_order_placeholder_replaced() {
+        // PR-3c CQ Minor: the PR-3b placeholder returned a Mat shape for
+        // Mat·Vec. Q6 replaces it with the correct Vec result.
+        compile_src("function f(m: Mat<3, 3>, v: Vec<3>): Vec<3>\n  return m * v\nend");
+    }
+
+    #[test]
+    fn mat_mul_vec_shape_mismatch_diag() {
+        // Mat<2,3> * Vec<2> — inner dim 3 != 2.
+        let diags = diags_for("function f(m: Mat<2, 3>, v: Vec<2>): Vec<2>\n  return m * v\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "shape mismatch in '*': left side has Mat<2, 3>, but right side has Vec<2>"
+        );
+    }
+
+    #[test]
+    fn mat_mul_scalar_dimensionless_returns_mat() {
+        // Q6: Mat * Scalar(ZERO) allowed (Mat stays dimensionless).
+        compile_src("function f(m: Mat<2, 2>, s: Scalar): Mat<2, 2>\n  return m * s\nend");
+    }
+
+    #[test]
+    fn mat_div_scalar_dimensionless_returns_mat() {
+        compile_src("function f(m: Mat<2, 2>, s: Scalar): Mat<2, 2>\n  return m / s\nend");
+    }
+
+    #[test]
+    fn mat_mul_scalar_with_dim_rejected_diag() {
+        // Q6: Mat * Scalar<m/s> rejected (Mat must stay dimensionless).
+        let diags =
+            diags_for("function f(m: Mat<2, 2>, s: Scalar<m/s>): Mat<2, 2>\n  return m * s\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '*': left side has Mat<2, 2>, but right side has Scalar<m*s^-1>"
+        );
+    }
+
+    #[test]
+    fn vec_mul_mat_rejected() {
+        // Q6-2: Vec * Mat rejected (only Mat * Vec is defined).
+        let diags = diags_for("function f(m: Mat<2, 3>, v: Vec<2>): Vec<2>\n  return v * m\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, MAT_REJECT_MSG);
+    }
+
+    #[test]
+    fn mat_div_mat_rejected() {
+        // Mat / Mat rejected (matrix inverse / division deferred).
+        let diags =
+            diags_for("function f(a: Mat<2, 2>, b: Mat<2, 2>): Mat<2, 2>\n  return a / b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].message, MAT_REJECT_MSG);
+    }
+
+    // Q11=A: Int scales Mat (dimensionless). 2*m / m*2 / m/2 → Mat unchanged.
+
+    #[test]
+    fn int_mul_mat_scales() {
+        compile_src("function f(m: Mat<2, 2>): Mat<2, 2>\n  return 2 * m\nend");
+    }
+
+    #[test]
+    fn mat_mul_int_scales() {
+        compile_src("function f(m: Mat<2, 2>): Mat<2, 2>\n  return m * 2\nend");
+    }
+
+    #[test]
+    fn mat_div_int_scales() {
+        compile_src("function f(m: Mat<2, 2>): Mat<2, 2>\n  return m / 2\nend");
+    }
+
+    #[test]
+    fn scalar_mul_mat_still_works_regression() {
+        // 2.0 * m (Scalar * Mat, commutative) still yields Mat<2, 2>.
+        compile_src("function f(m: Mat<2, 2>): Mat<2, 2>\n  return 2.0 * m\nend");
     }
 
     #[test]
