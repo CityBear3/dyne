@@ -1,0 +1,14 @@
+// F = m * a — unit-aware physics computation.
+// Per /design-discussion 2026-05-08: kg * m/s^2 evaluates to the
+// canonical Newton dimension [1, 1, -2, 0, 0, 0, 0].
+
+function compute_force(m: Scalar<kg>, a: Vec<3, m/s^2>): Vec<3, N>
+  return m * a
+end
+
+function main(): Int
+  let m: Scalar<kg> = 1.5
+  let a: Vec<3, m/s^2> = [9.8, 0.0, 0.0]
+  let f: Vec<3, N> = compute_force(m, a)
+  return 0
+end

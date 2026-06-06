@@ -67,19 +67,17 @@ end
 }
 
 #[test]
-fn units_in_type_annotation() {
-    // PR-3d-α: `Scalar<kg>` annotation now carries a real `kg` dimension
-    // (was `Dimension::ZERO` placeholder pre-3d). The `1.5` literal is
-    // dimensionless, so the let-binding unify fails — explicit literal→
-    // unit coercion is reserved to PR-3d-β / spec §3 ("conversion to a
-    // unit-annotated `Scalar` requires explicit handling"). The pre-3d
-    // version of this test passed only because both sides lowered to
-    // `Dimension::ZERO`, masking the mismatch.
+fn unit_annotated_let_coerces_dimensionless_literal() {
+    // PR-3d-β Task 10 (spec §4.7): a unit-annotated let-binding is an
+    // expected-type context, so the dimensionless `1.5` literal is promoted
+    // to `Scalar<kg>` — the annotation fixes the unit. (PR-3d-α rejected this
+    // as a dimension mismatch; the spec §4.7 amendment relaxed it.)
     let src = "let mass: Scalar<kg> = 1.5";
-    let err = compile(src).unwrap_err();
+    let result = compile(src);
     assert!(
-        err.iter().any(|d| d.message.contains("mismatch")),
-        "expected a type-mismatch diag, got: {err:?}"
+        result.is_ok(),
+        "expected clean compile (§4.7 coercion); diags: {:?}",
+        result.err()
     );
 }
 
@@ -273,6 +271,36 @@ fn builtin_match_option_compiles() {
         "expected clean compile, got: {:?}",
         result.err()
     );
+}
+
+#[test]
+fn compile_builtin_option_constructor_no_var_leak() {
+    // §1078 invariant on the BUILTIN Option<T> path: `Some(1)` mints a fresh
+    // type-arg Var that the `Option<Int>` return context binds to Int. The
+    // final `resolve_deep` pass in `run()` must substitute it everywhere —
+    // including the callee node recorded before the bind — so no `Ty::Var`
+    // survives in `types`. `typed_program_types_contains_no_unresolved_vars`
+    // (check.rs) pins this for a user-defined `Maybe<T>`; this confirms the
+    // builtins-injected Option/Result constructors are resolved by the same
+    // pass, not just user-defined generics.
+    use dyne::sema::ty::Ty;
+    let typed =
+        dyne::compile("function f(): Option<Int>\n  return Some(1)\nend").expect("clean compile");
+
+    fn contains_var(t: &Ty) -> bool {
+        match t {
+            Ty::Var(_) => true,
+            Ty::Function(args, ret) => args.iter().any(contains_var) || contains_var(ret),
+            Ty::Enum(_, args) => args.iter().any(contains_var),
+            Ty::Array(t) => contains_var(t),
+            Ty::Dict(k, v) => contains_var(k) || contains_var(v),
+            _ => false,
+        }
+    }
+
+    for (id, ty) in typed.types.iter() {
+        assert!(!contains_var(ty), "Ty::Var leaked at {id:?}: {ty:?}");
+    }
 }
 
 // ----- PR-3c Task 8: end-to-end + carry regressions -----
@@ -481,72 +509,177 @@ end";
 }
 
 #[test]
-fn compile_operator_side_zero_behavior_unchanged() {
-    // Slice-boundary pin: arithmetic and `^` on dim-carrying Scalars
-    // *would* be a dim-mismatch / dim-propagation once PR-3d-β replaces
-    // the operator-side ZERO drop with real propagation. In PR-3d-α we
-    // still accept these because the operator path strips dim before
-    // unify ever sees the disagreement; both functions return
-    // dimensionless `Scalar`, which matches the ZERO output.
+fn compile_operator_dim_propagation_active_both_arms() {
+    // Slice-boundary pin, now FULLY flipped. PR-3d-β makes operators
+    // propagate dimensions, so both arms that α accepted-via-ZERO now error:
+    // Task 2 flipped `+` (Q4 Add/Sub equal-dim); Task 5 flips `^` (synth_pow
+    // raises the dimension instead of stripping it). Task 7 supersedes this
+    // with full positive operator coverage (spec examples).
     //
-    // Params (rather than let-bindings) are used so the test exercises
-    // pure operator behavior without tripping the literal→unit coercion
-    // gap (deferred to PR-3d-β; tests like
-    // `units_in_type_annotation` document that gap separately).
-    //
-    // When PR-3d-β lands operator dim propagation, both cases flip: the
-    // assertions become `result.is_err()` with `dimension_mismatch`
-    // (for `+`) and propagated-dim mismatch (for `^`).
+    // Params (rather than let-bindings) keep the test on pure operator
+    // behavior without tripping the literal→unit coercion gap (Task 10).
 
-    // `+` arm: kg + m with dimensionless return.
+    // `+` arm: kg + m → dimension_mismatch (Q4 Add/Sub equal-dim).
     let plus_src = "\
 function f(x: Scalar<kg>, y: Scalar<m>): Scalar
   return x + y
 end";
-    let plus = dyne::compile(plus_src);
+    let plus_diags = dyne::compile(plus_src).expect_err("kg + m must be a dimension mismatch");
     assert!(
-        plus.is_ok(),
-        "PR-3d-α should still accept dim-mixing under `+` (β handles the diag); diags: {:?}",
-        plus.err()
+        plus_diags
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in '+'")),
+        "diags: {plus_diags:?}"
     );
 
-    // `^` arm: kg ^ 2 with dimensionless return. synth_pow must strip
-    // the input dim (matching synth_arith) so the return-type unify
-    // sees `Scalar` ↔ `Scalar(ZERO)` rather than `Scalar` ↔ `Scalar(kg)`.
+    // `^` arm: `x ^ 2` now yields Scalar<kg^2> (dim propagated through `^`),
+    // which no longer unifies with the dimensionless `Scalar` return — so the
+    // mismatch diag names the propagated `Scalar<kg^2>`. (α stripped it to
+    // ZERO and accepted.)
     let pow_src = "\
 function g(x: Scalar<kg>): Scalar
   return x ^ 2
 end";
-    let pow = dyne::compile(pow_src);
+    let pow_diags = dyne::compile(pow_src).expect_err("kg^2 must not match dimensionless return");
     assert!(
-        pow.is_ok(),
-        "PR-3d-α should still accept `^` on dim-carrying Scalars (β handles propagation); diags: {:?}",
-        pow.err()
+        pow_diags.iter().any(|d| d.message.contains("Scalar<kg^2>")),
+        "expected the propagated Scalar<kg^2> in a diag; got: {pow_diags:?}"
     );
 }
 
 #[test]
-fn compile_vec_dim_mixing_zero_behavior_unchanged() {
-    // Slice-boundary pin (CQ-IMP1): the Vec arm of `synth_arith`
-    // (compiler/src/sema/check.rs Vec/Vec arm) is a separate code
-    // path from the Scalar arm. PR-3d-α picks the LEFT operand's
-    // dim (so `Vec<3, kg> + Vec<3, m>` returns `Vec<3, kg>`, which
-    // unifies cleanly against an annotated `Vec<3, kg>` return).
-    //
-    // PR-3d-β must flip BOTH the Scalar arm AND the Vec arm. This
-    // test pins the Vec arm so a partial β migration (Scalar flipped
-    // but Vec not) is loudly detectable.
-    //
-    // When PR-3d-β lands, this assertion becomes `result.is_err()`
-    // with `dimension_mismatch`.
+fn compile_vec_dim_mixing_flips_to_dim_mismatch_at_task3() {
+    // Slice-boundary pin (CQ-IMP1), now FLIPPED. The Vec arm of
+    // `synth_arith` is a separate code path from the Scalar arm; PR-3d-α
+    // picked the LEFT operand's dim so `Vec<3, kg> + Vec<3, m>` returned
+    // `Vec<3, kg>` (accepted). PR-3d-β Task 3 lands real Q5 Vec rules:
+    // `+`/`-` require equal dimension, so this now errors with a
+    // `dimension_mismatch` (same shape, so the shape check passes first).
     let src = "\
 function f(x: Vec<3, kg>, y: Vec<3, m>): Vec<3, kg>
   return x + y
 end";
-    let result = dyne::compile(src);
+    let diags = dyne::compile(src).expect_err("Vec<3,kg> + Vec<3,m> must now be a dim mismatch");
     assert!(
-        result.is_ok(),
-        "PR-3d-α should still accept dim-mixing under Vec `+` (β handles the diag); diags: {:?}",
-        result.err()
+        diags
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in '+'")),
+        "diags: {diags:?}"
+    );
+}
+
+// ----- PR-3d-β Task 7: full-slice e2e gate (spec §4.7-4.8 + physics) -----
+//
+// Integration coverage for the landed operator rules + Task-10 coercion.
+// Dim-carrying `let` bindings are now usable directly (no param-passthrough).
+
+#[test]
+fn compile_spec_section_4_7_int_scalar_widening() {
+    // spec §4.7: `i * dt` where dt: Scalar<s>, i: Int → Scalar<s>.
+    let src = "function f(): Scalar<s>\n  let dt: Scalar<s> = 0.01\n  let i: Int = 100\n  return i * dt\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "spec §4.7 example must type-check; diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_spec_section_4_8_vec_shape_mismatch() {
+    // spec §4.8: `a + b` where a: Vec<3>, b: Vec<2> → shape mismatch.
+    let src = "function f(): Vec<3>\n  let a: Vec<3> = [1.0, 2.0, 3.0]\n  let b: Vec<2> = [1.0, 2.0]\n  return a + b\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message
+            == "shape mismatch in '+': left side has Vec<3>, but right side has Vec<2>"),
+        "spec §4.8 example must produce the shape-mismatch diag; diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_spec_section_4_8_mat_vec_multiplication() {
+    // spec §4.8: `m * v` where m: Mat<2,3>, v: Vec<3> → Vec<2>.
+    let src = "function f(): Vec<2>\n  let m: Mat<2, 3> = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\n  let v: Vec<3> = [1.0, 2.0, 3.0]\n  return m * v\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "spec §4.8 Mat·Vec must produce Vec<2>; diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_force_equals_mass_times_acceleration() {
+    // F = m * a, m: Scalar<kg>, a: Vec<3, m/s^2> → Vec<3, kg*m/s^2> = Vec<3, N>.
+    let src = "function f(): Vec<3, N>\n  let m: Scalar<kg> = 1.5\n  let a: Vec<3, m/s^2> = [9.8, 0.0, 0.0]\n  return m * a\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "F = ma should type-check (kg * m/s^2 = N); diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_dim_mismatch_in_addition_diag() {
+    let src = "function f(): Scalar<kg>\n  let kg_v: Scalar<kg> = 1.0\n  let m_v: Scalar<m> = 2.0\n  return kg_v + m_v\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in '+'")),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_kinetic_energy_formula() {
+    // E_k = 0.5 * m * v^2, m: Scalar<kg>, v: Scalar<m/s>.
+    // kg * (m/s)^2 = kg*m^2/s^2 = J. The `0.5` literal is inline (a
+    // dimensionless Scalar in the multiplication), reading as the physics
+    // formula does.
+    let src = "function f(): Scalar<J>\n  let m: Scalar<kg> = 1.5\n  let v: Scalar<m/s> = 10.0\n  return 0.5 * m * v ^ 2\nend";
+    assert!(
+        dyne::compile(src).is_ok(),
+        "kinetic energy formula should type-check (kg * (m/s)^2 = J); diags: {:?}",
+        dyne::compile(src).err()
+    );
+}
+
+#[test]
+fn compile_vec_exponentiation_rejected() {
+    // Q12 (user-facing): `v ^ 2` on a Vec is rejected end-to-end.
+    let src = "function f(v: Vec<3>): Vec<3>\n  return v ^ 2\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message
+            == "`^` on a Vec is not supported (vector exponentiation is ambiguous; use dot(v, v) or norm(v) for squared magnitude)"),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_int_negative_exponent_rejected() {
+    // Q13 (user-facing): an Int raised to a negative power is rejected
+    // end-to-end (fractional result Int can't represent).
+    let src = "function f(): Int\n  return 2 ^ -1\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags.iter().any(|d| d.message
+            == "`^` on an Int with a negative exponent is not supported (convert to a float (Scalar) first)"),
+        "diags: {diags:?}"
+    );
+}
+
+#[test]
+fn compile_unit_negative_exponent_out_of_i8_range_emits_diag() {
+    // TC-I-1 (α /review): T13 enabled negative-exponent parsing, so
+    // `Scalar<s^-200>` parses; -200 is out of i8 range → the diag fires.
+    // Pairs the positive-OOR coverage (eval_unit_expr `kg^1000`).
+    let src = "function f(): Scalar<s^-200>\n  return 0.0\nend";
+    let diags = dyne::compile(src).unwrap_err();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("out of valid range") && d.message.contains("-200")),
+        "diags: {diags:?}"
     );
 }

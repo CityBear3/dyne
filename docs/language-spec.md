@@ -295,15 +295,17 @@ end
 
 ### 4.7 Type Conversion
 
-Implicit conversion from Int to dimensionless Scalar is allowed. Direct assignment to a unit-annotated Scalar is a type error. Conversion from Scalar to Int requires an explicit conversion function.
+Implicit conversion from `Int` to a dimensionless `Scalar` happens for integer literals and for an `Int` operand combined with a `Scalar` in an arithmetic expression (e.g. `i * dt`, where `dt` is a `Scalar` and the result is `Scalar`); a pure `Int`-only arithmetic expression stays `Int` (e.g. `i * 2` is `Int`), and a bare `Int` variable is not implicitly converted on direct assignment. In an expected-type context where the destination is a unit-annotated `Scalar<u>` or `Vec<n, u>` (let-binding with annotation, function parameter, function return type, or struct-field initializer), a dimensionless **numeric literal** of the matching shape (an integer or float literal — including a negated literal — typed as a unit-less `Scalar`, or a unit-less `Vec<n>` literal whose elements are all numeric literals) is implicitly promoted to the annotated unit; the destination annotation determines the unit unambiguously. A dimensionless **variable or computed expression** is *not* promoted in these contexts — promoting it would risk silently mislabeling a count or ratio as a physical quantity (e.g. turning a loop counter into a mass) — so it must be handled explicitly. Outside expected-type contexts (e.g. a bare subexpression with no expected type, such as `1.5 + mass`), assignment of a dimensionless value to a unit-annotated `Scalar` remains a type error. Conversion from `Scalar` to `Int` requires an explicit conversion function.
 
 ```
 let i: Int = 3
-let x: Scalar = i              // OK: implicit conversion to dimensionless Scalar
-let mass: Scalar<kg> = i       // Compile error: implicit conversion to unit-annotated type
-let dt: Scalar<s> = 0.01
-let t: Scalar<s> = i * dt      // OK: i -> Scalar (dimensionless), unit propagated by multiplication
-let n: Int = to_int(x)         // Explicit conversion required
+let x: Scalar = i              // Compile error: a bare Int variable is not implicitly converted on assignment
+let count: Scalar = 3          // OK: an integer literal widens to a dimensionless Scalar
+let mass: Scalar<kg> = i       // Compile error: a dimensionless variable is not implicitly unit-annotated
+let g: Scalar<m/s^2> = 9.8     // OK: a numeric literal coerces to the annotated unit
+let dt: Scalar<s> = 0.01       // OK: literal
+let t: Scalar<s> = i * dt      // OK: i -> Scalar (dimensionless) inside the expression; unit propagated by *
+let n: Int = to_int(count)     // Explicit conversion required
 ```
 
 ### 4.8 Vector/Matrix Dimension Checking

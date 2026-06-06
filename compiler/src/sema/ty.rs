@@ -1,9 +1,12 @@
 //! Type representation for the sema phase.
 //!
-//! Populated incrementally through Stage 3:
+//! Populated incrementally through Stage 3 (chronological):
 //! - PR-3b: `Ty` enum, `Dimension` stub (ZERO only), `TypeVarId`, `lower_type`
-//! - PR-3d: `Dimension` arithmetic (mul, div, pow), unit propagation through operators
 //! - PR-3c: enum type-argument instantiation via `TypeVarId`
+//! - PR-3d-α: real `Dimension` via `eval_unit_expr` + `UnitRegistry`;
+//!   `lower_scalar` / `lower_vec` carry real dims from annotations
+//! - PR-3d-β: operator dimension propagation (`mul` / `div` / `pow`);
+//!   literal-to-unit coercion; Mat·Vec / Mat·Mat real shape rules
 
 use std::collections::HashMap;
 
@@ -211,8 +214,22 @@ impl UnitRegistry {
 /// Evaluate a `UnitExpr` AST node to a `Dimension` value. Recursively
 /// walks Atom / Mul / Div / Pow nodes. Emits diagnostics on unknown
 /// unit names, exponents outside i8 range, and dimension-component
-/// overflow. Returns `Dimension::ZERO` as cascade-suppression sentinel
-/// on any error so subsequent type checking continues.
+/// overflow. Returns `Err(())` on any error (the diagnostic is already
+/// pushed at the failure site, so the unit error type carries no payload);
+/// callers (`lower_scalar` / `lower_vec`) translate this into `Ty::Error`,
+/// which `synth_arith` / `synth_pow` short-circuit without further diags.
+///
+/// Q9 (CQ M4 from PR-3d-α /review): α returned `Dimension::ZERO` as a
+/// cascade-suppression sentinel here, but a `Scalar(ZERO)` from a *failed*
+/// lowering is indistinguishable from a genuinely dimensionless `Scalar`.
+/// Once β's `synth_arith` flips to `if d1 != d2 then dimension_mismatch`,
+/// that ambiguity would suppress root-cause diags and emit misleading
+/// double-diags. Propagating `Err(())` → `Ty::Error` removes the sentinel.
+///
+/// `Mul` / `Div` evaluate *both* operands before propagating an error so
+/// every distinct unknown unit in a compound annotation (e.g.
+/// `foo*bar/foo`) is still reported in one pass — short-circuiting on the
+/// first failure would drop sibling diagnostics.
 ///
 /// Unknown-unit diagnostics are deduplicated by message against the
 /// already-emitted `diags` vec so a typo like `xyz` reported in the
@@ -223,38 +240,45 @@ impl UnitRegistry {
 /// TypeChecker.diagnostics, merged at the end of `check()`) the
 /// dedup does not cross the boundary; a follow-up can hoist a shared
 /// `HashSet<String>` if that edge case surfaces.
-pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnostic>) -> Dimension {
+pub(crate) fn eval_unit_expr(
+    u: &crate::ast::UnitExpr,
+    diags: &mut Vec<Diagnostic>,
+) -> Result<Dimension, ()> {
     use crate::ast::UnitExprKind;
     use crate::sema::diag;
     match &u.kind {
-        UnitExprKind::Atom(name) => UnitRegistry::lookup(name).unwrap_or_else(|| {
-            let new_diag = diag::unknown_unit(u.span, name);
-            // O(n) scan over already-emitted diags. Realistic compile
-            // produces O(10) diags total, so the scan is negligible
-            // compared to allocation. If diag piles ever grow large
-            // (e.g. tens of thousands of unit annotations in one
-            // module), hoist a `HashSet<String>` to `check()` and
-            // thread it through `lower_type` / `eval_unit_expr` for
-            // O(1) lookup; that refactor is intentionally deferred.
-            if !diags.iter().any(|d| d.message == new_diag.message) {
-                diags.push(new_diag);
+        UnitExprKind::Atom(name) => match UnitRegistry::lookup(name) {
+            Some(dim) => Ok(dim),
+            None => {
+                let new_diag = diag::unknown_unit(u.span, name);
+                // O(n) scan over already-emitted diags. Realistic compile
+                // produces O(10) diags total, so the scan is negligible
+                // compared to allocation. If diag piles ever grow large
+                // (e.g. tens of thousands of unit annotations in one
+                // module), hoist a `HashSet<String>` to `check()` and
+                // thread it through `lower_type` / `eval_unit_expr` for
+                // O(1) lookup; that refactor is intentionally deferred.
+                if !diags.iter().any(|d| d.message == new_diag.message) {
+                    diags.push(new_diag);
+                }
+                Err(())
             }
-            Dimension::ZERO
-        }),
+        },
         UnitExprKind::Mul(a, b) => {
+            // Evaluate both sides first so every unknown atom is reported,
+            // then propagate any failure (`?` short-circuits only after
+            // both diags are collected).
             let l = eval_unit_expr(a, diags);
             let r = eval_unit_expr(b, diags);
-            l.mul(r).unwrap_or_else(|_| {
+            l?.mul(r?).map_err(|_| {
                 diags.push(diag::dimension_overflow(u.span));
-                Dimension::ZERO
             })
         }
         UnitExprKind::Div(a, b) => {
             let l = eval_unit_expr(a, diags);
             let r = eval_unit_expr(b, diags);
-            l.div(r).unwrap_or_else(|_| {
+            l?.div(r?).map_err(|_| {
                 diags.push(diag::dimension_overflow(u.span));
-                Dimension::ZERO
             })
         }
         UnitExprKind::Pow(base, n) => {
@@ -263,12 +287,11 @@ pub(crate) fn eval_unit_expr(u: &crate::ast::UnitExpr, diags: &mut Vec<Diagnosti
             // explicit and matches Effective Rust Item 5.
             let Ok(exp) = i8::try_from(*n) else {
                 diags.push(diag::unit_exponent_out_of_range(u.span, *n));
-                return Dimension::ZERO;
+                return Err(());
             };
-            let base_dim = eval_unit_expr(base, diags);
-            base_dim.pow(exp).unwrap_or_else(|_| {
+            let base_dim = eval_unit_expr(base, diags)?;
+            base_dim.pow(exp).map_err(|_| {
                 diags.push(diag::dimension_overflow(u.span));
-                Dimension::ZERO
             })
         }
     }
@@ -517,18 +540,25 @@ pub(crate) fn expected_type_param_count(def_id: DefId, definitions: &DefinitionT
 /// `Scalar` / `Scalar<unit>` → `Ty::Scalar(dim)` with `dim` evaluated from
 /// the unit annotation. Bare `Scalar` (no args) is dimensionless. On unknown
 /// unit / overflow / out-of-range exponent, `eval_unit_expr` emits a focused
-/// diag and substitutes `Dimension::ZERO` to suppress cascade.
+/// diag and returns `Err(())`, which this lowers to `Ty::Error` so the
+/// failure propagates cleanly instead of masquerading as `Scalar(ZERO)`.
 fn lower_scalar(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
     match args {
         [] => Ty::Scalar(Dimension::ZERO),
-        [TypeArg::Unit(u)] => Ty::Scalar(eval_unit_expr(u, diags)),
+        [TypeArg::Unit(u)] => match eval_unit_expr(u, diags) {
+            Ok(dim) => Ty::Scalar(dim),
+            Err(()) => Ty::Error,
+        },
         // Single-atom units (`Scalar<kg>`) parse as TypeArg::Type(Named(...))
         // because the type-arg parser can't tell `kg` apart from `Int` until
         // it sees a `*`/`/`/`^`. Synthesize an Atom UnitExpr so the same
         // unknown_unit / overflow / out-of-range diags apply uniformly.
         [TypeArg::Type(t)] => match &t.kind {
             TypeKind::Named(name) => {
-                Ty::Scalar(eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags))
+                match eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags) {
+                    Ok(dim) => Ty::Scalar(dim),
+                    Err(()) => Ty::Error,
+                }
             }
             _ => {
                 diags.push(Diagnostic::type_error(
@@ -571,9 +601,17 @@ fn lower_vec(args: &[TypeArg], span: Span, diags: &mut Vec<Diagnostic>) -> Ty {
     }
     let dim = match args.get(1) {
         None => Dimension::ZERO,
-        Some(TypeArg::Unit(u)) => eval_unit_expr(u, diags),
+        Some(TypeArg::Unit(u)) => match eval_unit_expr(u, diags) {
+            Ok(dim) => dim,
+            Err(()) => return Ty::Error,
+        },
         Some(TypeArg::Type(t)) => match &t.kind {
-            TypeKind::Named(name) => eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags),
+            TypeKind::Named(name) => {
+                match eval_unit_expr(&synthesize_atom_unit_expr(t, name), diags) {
+                    Ok(dim) => dim,
+                    Err(()) => return Ty::Error,
+                }
+            }
             // A non-Named `TypeArg::Type` (e.g. `Generic`, `Function`)
             // can reach here when the user writes a type — not a unit —
             // in the second slot, like `Vec<3, Vec<3>>`. The parser's
@@ -750,8 +788,8 @@ mod tests {
     #[test]
     fn lower_scalar_with_unknown_unit_emits_diag() {
         let (ty, diags) = lower_first_let_ty("let x: Scalar<xyz> = 0.0");
-        // Falls back to ZERO (cascade suppression).
-        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        // Q9: eval failure propagates as Ty::Error (cascade suppression).
+        assert_eq!(ty, Ty::Error);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unknown unit"));
         assert!(diags[0].message.contains("xyz"));
@@ -795,7 +833,26 @@ mod tests {
     #[test]
     fn lower_vec_with_unknown_unit_emits_diag() {
         let (ty, diags) = lower_first_let_ty("let v: Vec<3, xyz> = 0");
-        assert_eq!(ty, Ty::Vec(3, Dimension::ZERO));
+        assert_eq!(ty, Ty::Error);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown unit"));
+    }
+
+    #[test]
+    fn lower_scalar_unknown_unit_returns_ty_error() {
+        // Q9: eval failure must propagate as Ty::Error (not Ty::Scalar(ZERO)),
+        // so downstream operator code can short-circuit cleanly.
+        let (ty, diags) = lower_first_let_ty("let x: Scalar<xyz_typo> = 0.0");
+        assert_eq!(ty, Ty::Error, "expected Ty::Error, got {ty:?}");
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown unit"));
+        assert!(diags[0].message.contains("xyz_typo"));
+    }
+
+    #[test]
+    fn lower_vec_unknown_unit_returns_ty_error() {
+        let (ty, diags) = lower_first_let_ty("let v: Vec<3, xyz_typo> = [0.0, 0.0, 0.0]");
+        assert_eq!(ty, Ty::Error);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unknown unit"));
     }
@@ -807,7 +864,7 @@ mod tests {
         // eval_unit_expr collapses to a single diag for the same name
         // within one diags vec.
         let (ty, diags) = lower_first_let_ty("let x: Scalar<xyz*xyz/xyz> = 0.0");
-        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        assert_eq!(ty, Ty::Error);
         let unknown_xyz: Vec<&Diagnostic> = diags
             .iter()
             .filter(|d| d.message.contains("unknown unit") && d.message.contains("xyz"))
@@ -857,7 +914,7 @@ mod tests {
         // Different unknown names must each surface separately —
         // the dedup is name-scoped, not blanket-suppressed.
         let (ty, diags) = lower_first_let_ty("let x: Scalar<foo*bar/foo> = 0.0");
-        assert_eq!(ty, Ty::Scalar(Dimension::ZERO));
+        assert_eq!(ty, Ty::Error);
         let unknown_foo = diags
             .iter()
             .filter(|d| d.message.contains("unknown unit") && d.message.contains("foo"))
@@ -1127,6 +1184,69 @@ mod tests {
         assert_eq!(two.pow(-128), Err(OverflowError));
     }
 
+    // `mul` is pointwise checked_add; `div` is pointwise checked_sub.
+    // Boundary tests parallel to `dimension_pow_at_i8_*` above.
+
+    #[test]
+    fn dimension_mul_at_i8_max_boundary_succeeds() {
+        // 127 + 0 = 127 — exactly i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_mul_overflows_just_above_max() {
+        // 127 + 1 = 128 — overflows i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(b), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_mul_at_i8_min_boundary_succeeds() {
+        // -128 + 0 = -128 — exactly i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_mul_underflows_just_below_min() {
+        // -128 + -1 = -129 — underflows i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([-1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.mul(b), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_div_at_i8_max_boundary_succeeds() {
+        // 127 - 0 = 127 — exactly i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_div_overflows_just_above_max() {
+        // 127 - (-1) = 128 — overflows i8::MAX.
+        let a = Dimension([127, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([-1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(b), Err(OverflowError));
+    }
+
+    #[test]
+    fn dimension_div_at_i8_min_boundary_succeeds() {
+        // -128 - 0 = -128 — exactly i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(Dimension::ZERO).unwrap(), a);
+    }
+
+    #[test]
+    fn dimension_div_underflows_just_below_min() {
+        // -128 - 1 = -129 — underflows i8::MIN.
+        let a = Dimension([-128, 0, 0, 0, 0, 0, 0]);
+        let b = Dimension([1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.div(b), Err(OverflowError));
+    }
+
     #[test]
     fn format_si_dimensionless_is_one() {
         assert_eq!(Dimension::ZERO.format_si(), "1");
@@ -1346,16 +1466,16 @@ mod tests {
         let u = unit_atom("kg");
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([0, 1, 0, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([0, 1, 0, 0, 0, 0, 0])));
         assert!(diags.is_empty());
     }
 
     #[test]
-    fn eval_unit_expr_unknown_atom_emits_diag_returns_zero() {
+    fn eval_unit_expr_unknown_atom_emits_diag_returns_err() {
         let u = unit_atom("xyz_unit");
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension::ZERO);
+        assert_eq!(dim, Err(()));
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unknown unit"));
         assert!(diags[0].message.contains("xyz_unit"));
@@ -1367,7 +1487,7 @@ mod tests {
         let u = unit_mul(unit_atom("m"), unit_atom("s"));
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([1, 0, 1, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([1, 0, 1, 0, 0, 0, 0])));
         assert!(diags.is_empty());
     }
 
@@ -1377,7 +1497,7 @@ mod tests {
         let u = unit_div(unit_atom("m"), unit_atom("s"));
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([1, 0, -1, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([1, 0, -1, 0, 0, 0, 0])));
     }
 
     #[test]
@@ -1386,7 +1506,7 @@ mod tests {
         let u = unit_pow(unit_atom("m"), 2);
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([2, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([2, 0, 0, 0, 0, 0, 0])));
     }
 
     #[test]
@@ -1395,7 +1515,7 @@ mod tests {
         let u = unit_pow(unit_atom("s"), -1);
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([0, 0, -1, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([0, 0, -1, 0, 0, 0, 0])));
     }
 
     #[test]
@@ -1404,7 +1524,7 @@ mod tests {
         let u = unit_div(unit_atom("m"), unit_pow(unit_atom("s"), 2));
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([1, 0, -2, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([1, 0, -2, 0, 0, 0, 0])));
     }
 
     #[test]
@@ -1413,7 +1533,7 @@ mod tests {
         let u = unit_pow(unit_pow(unit_atom("m"), 100), 2);
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension::ZERO);
+        assert_eq!(dim, Err(()));
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("dimension component overflow"));
     }
@@ -1424,7 +1544,7 @@ mod tests {
         let u = unit_pow(unit_atom("kg"), 1000);
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension::ZERO);
+        assert_eq!(dim, Err(()));
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("out of valid range"));
         assert!(diags[0].message.contains("1000"));
@@ -1436,7 +1556,7 @@ mod tests {
         let u = unit_atom("N");
         let mut diags = Vec::new();
         let dim = eval_unit_expr(&u, &mut diags);
-        assert_eq!(dim, Dimension([1, 1, -2, 0, 0, 0, 0]));
+        assert_eq!(dim, Ok(Dimension([1, 1, -2, 0, 0, 0, 0])));
         assert!(diags.is_empty());
     }
 }

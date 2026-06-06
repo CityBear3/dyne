@@ -776,7 +776,7 @@ mod tests {
     // these tests pin.
 
     #[test]
-    fn pr3d_alpha_scalar_kg_annotation_carries_kg_dimension() {
+    fn scalar_kg_annotation_carries_kg_dimension() {
         use crate::sema::ty::{Dimension, Ty};
 
         let prog = parse_src("function f(x: Scalar<kg>): Scalar<kg>\n  return x\nend");
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_meters_per_second_carries_compound_dimension() {
+    fn scalar_meters_per_second_carries_compound_dimension() {
         use crate::sema::ty::{Dimension, Ty};
 
         let prog = parse_src("function f(x: Scalar<m/s>): Scalar<m/s>\n  return x\nend");
@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_vec_with_unit_carries_dimension() {
+    fn vec_with_unit_carries_dimension() {
         use crate::sema::ty::{Dimension, Ty};
 
         let prog = parse_src("function f(v: Vec<3, m/s>): Vec<3, m/s>\n  return v\nend");
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_top_level_mul_carries_dimension() {
+    fn scalar_top_level_mul_carries_dimension() {
         // Parser-seam pin (TC-IMP3): top-level Mul in unit position.
         // `Scalar<kg*m>` exercises UnitExpr::Mul(Atom(kg), Atom(m))
         // through parser → lower_scalar → eval_unit_expr.
@@ -849,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_top_level_pow_carries_dimension() {
+    fn scalar_top_level_negative_pow_carries_dimension() {
         // Parser-seam pin (TC-IMP3): top-level Pow in unit position.
         // `Scalar<s^-2>` exercises UnitExpr::Pow(Atom(s), -2)
         // through parser → lower_scalar → eval_unit_expr.
@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn pr3d_alpha_scalar_compound_force_unit_carries_dimension() {
+    fn scalar_newton_carries_compound_dimension() {
         // Parser-seam pin (TC-IMP3): compound unit with Mul + Div + Pow.
         // `Scalar<kg*m/s^2>` is the canonical force unit (Newton in base
         // form). Exercises UnitExpr::Div(Mul(kg, m), Pow(s, 2)) through
@@ -889,5 +889,268 @@ mod tests {
         } else {
             panic!("expected Function, got {f_ty:?}");
         }
+    }
+
+    // ----- PR-3d-β Task 10: literal-to-unit coercion (Q10, spec §4.7) -----
+    //
+    // In an expected-type context (let annotation, function param, return
+    // type) a dimensionless value (Int-promoted or float literal) coerces to
+    // the annotated `Scalar<u>`. These tests live here (not check.rs::tests)
+    // because the def_types unit-value inspection helpers (`parse_src`,
+    // `def_id_of`) are defined in this module, alongside the unit-annotation
+    // dimension tests above. The `.expect("clean compile")` is the red/green
+    // pivot — without the coercion these programs fail with a dimension mismatch.
+
+    #[test]
+    fn q10_let_promotes_float_literal_to_annotated_unit() {
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let m: Scalar<kg> = 1.5");
+        let typed = check(prog).expect("clean compile");
+        let m = def_id_of(&typed, "m");
+        assert_eq!(
+            *typed.def_types.get(&m).unwrap(),
+            Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_let_promotes_int_to_annotated_unit() {
+        // The spec §4.7 line-303 example (`let mass: Scalar<kg> = i`), now OK.
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let mass: Scalar<kg> = 3");
+        let typed = check(prog).expect("clean compile");
+        let m = def_id_of(&typed, "mass");
+        assert_eq!(
+            *typed.def_types.get(&m).unwrap(),
+            Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_function_arg_promotes_dimensionless_literal() {
+        let prog = parse_src(
+            "function f(x: Scalar<kg>): Scalar<kg>\n  return x\nend\nlet m: Scalar<kg> = f(2.5)",
+        );
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_function_return_promotes_dimensionless_literal() {
+        let prog = parse_src("function f(): Scalar<kg>\n  return 2.5\nend");
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_let_promotes_vec_literal() {
+        // Vec extension: a dimensionless `Vec<3>` literal promotes to the
+        // annotated `Vec<3, m>` (same length).
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let v: Vec<3, m> = [1.0, 2.0, 3.0]");
+        let typed = check(prog).expect("clean compile");
+        let v = def_id_of(&typed, "v");
+        assert_eq!(
+            *typed.def_types.get(&v).unwrap(),
+            Ty::Vec(3, Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_vec_dim_carrying_not_coerced() {
+        // Guard symmetry: a dim-CARRYING Vec source does NOT coerce to a
+        // different unit — `Vec<3, m>` against `Vec<3, kg>` stays a mismatch.
+        let prog = parse_src("function f(v: Vec<3, m>): Vec<3, kg>\n  return v\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3, m>`"
+        );
+    }
+
+    #[test]
+    fn q10_vec_shape_mismatch_not_coerced() {
+        // The coercion requires matching length (sn == en). A length-2 vec
+        // literal against `Vec<3, m>` fails the guard → no coercion → the
+        // shape mismatch surfaces.
+        let prog = parse_src("let v: Vec<3, m> = [1.0, 2.0]");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, m>`, found `Vec<2>`"
+        );
+    }
+
+    #[test]
+    fn q10_ambiguous_site_still_rejects_dim_mismatch() {
+        // No expected type is pushed into the `+`, so synth sees
+        // Scalar(ZERO) + Scalar<kg> and rejects (Task 2 Q4). The §4.7
+        // coercion applies only in expected-type contexts, not bare
+        // subexpressions — this pins that the coercion does NOT leak into
+        // synth_arith's operand path. (The `let m: Scalar<kg> = 2.0` DOES
+        // coerce — a separate, valid expected-type context.)
+        let prog =
+            parse_src("function f(): Scalar<kg>\n  let m: Scalar<kg> = 2.0\n  return 1.5 + m\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "dimension mismatch in '+': left side has Scalar, but right side has Scalar<kg>"
+        );
+    }
+
+    // Q10-refinement (2026-05-24): coercion is LITERAL-ONLY. A dimensionless
+    // VARIABLE / computed expression in a unit-annotated context is rejected —
+    // only numeric literals coerce. Closes the units-safety hole where
+    // `function mass_of(n: Int): Scalar<kg> return n end` silently turned a
+    // count into a mass across the function boundary. (The literal cases stay
+    // green — see the five `q10_*_promotes_*` tests above.)
+
+    #[test]
+    fn q10_dimensionless_int_variable_not_coerced() {
+        // The closed hole: a dimensionless Int variable must NOT coerce to
+        // `Scalar<kg>` (count → kg blocked). Only literals coerce.
+        let prog = parse_src("function mass_of(count: Int): Scalar<kg>\n  return count\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<kg>`, found `Int`"
+        );
+    }
+
+    #[test]
+    fn q10_dimensionless_scalar_variable_not_coerced() {
+        // A dimensionless `Scalar` variable must NOT coerce to `Scalar<kg>`.
+        let prog = parse_src("function f(x: Scalar): Scalar<kg>\n  return x\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<kg>`, found `Scalar`"
+        );
+    }
+
+    #[test]
+    fn q10_dimensionless_vec_variable_not_coerced() {
+        // Parallel to the Scalar case for the Vec coercion arm: a dimensionless
+        // `Vec<3>` variable must NOT coerce to `Vec<3, m>` (only `[...]` literals do).
+        let prog = parse_src("function f(v: Vec<3>): Vec<3, m>\n  return v\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, m>`, found `Vec<3>`"
+        );
+    }
+
+    #[test]
+    fn q10_struct_field_promotes_literal() {
+        // A struct-field initializer is an expected-type context routed
+        // through `check_expr`, so a numeric literal coerces to the field's
+        // unit-annotated type — the same chokepoint as let / param / return.
+        let prog = parse_src("struct Body\n  m: Scalar<kg>\nend\nlet b: Body = Body { m: 1.5 }");
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_struct_field_variable_not_coerced() {
+        // Q10-refinement: a dimensionless VARIABLE in a unit-annotated struct
+        // field is rejected (literal-only), consistent with the let / param /
+        // return contexts.
+        let prog = parse_src(
+            "struct Body\n  m: Scalar<kg>\nend\nfunction f(g: Scalar): Body\n  return Body { m: g }\nend",
+        );
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Scalar<kg>`, found `Scalar`"
+        );
+    }
+
+    #[test]
+    fn q10_vec_variable_elements_not_coerced() {
+        // I1: a `VecLit` whose ELEMENTS are dimensionless variables must NOT
+        // coerce to a unit-annotated `Vec` — only a `[...]` of numeric literals
+        // does. Without the element check, `[a, b, c]` would launder variables
+        // into `Vec<3, kg>`, the same hole the scalar side closes. Symmetric
+        // with `q10_dimensionless_scalar_variable_not_coerced`.
+        let prog = parse_src(
+            "function f(a: Scalar, b: Scalar, c: Scalar): Vec<3, kg>\n  return [a, b, c]\nend",
+        );
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3>`"
+        );
+    }
+
+    #[test]
+    fn q10_negated_literal_coerces() {
+        // M1: pins the `UnaryOp(Neg, FloatLit)` arm of `is_numeric_literal` —
+        // a negated numeric literal still coerces to the annotated unit.
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let g: Scalar<m> = -9.8");
+        let typed = check(prog).expect("clean compile");
+        let g = def_id_of(&typed, "g");
+        assert_eq!(
+            *typed.def_types.get(&g).unwrap(),
+            Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    // Task 13 sub-item B: Minor coverage gaps (test-coverage + adversarial-tests).
+
+    #[test]
+    fn q10_negated_int_literal_coerces() {
+        // Pins the `UnaryOp(Neg, IntLit)` arm of `is_numeric_literal` — only
+        // `Neg(FloatLit)` was pinned (q10_negated_literal_coerces). A negated
+        // *int* literal must also coerce to the annotated unit.
+        use crate::sema::ty::{Dimension, Ty};
+        let prog = parse_src("let g: Scalar<m> = -3");
+        let typed = check(prog).expect("clean compile");
+        let g = def_id_of(&typed, "g");
+        assert_eq!(
+            *typed.def_types.get(&g).unwrap(),
+            Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0]))
+        );
+    }
+
+    #[test]
+    fn q10_function_arg_promotes_vec_literal() {
+        // Vec literal coercion at the param position (only the let position was
+        // covered by q10_let_promotes_vec_literal). The dimensionless `Vec<3>`
+        // argument literal coerces to the param's `Vec<3, m>`. Parallels the
+        // Scalar pair (q10_function_arg_promotes_dimensionless_literal).
+        let prog = parse_src(
+            "function f(v: Vec<3, m>): Vec<3, m>\n  return v\nend\nlet w: Vec<3, m> = f([1.0, 2.0, 3.0])",
+        );
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_function_return_promotes_vec_literal() {
+        // Vec literal coercion at the return position. The dimensionless
+        // `Vec<3>` literal coerces to the declared `Vec<3, m>` return.
+        let prog = parse_src("function f(): Vec<3, m>\n  return [1.0, 2.0, 3.0]\nend");
+        check(prog).expect("clean compile");
+    }
+
+    #[test]
+    fn q10_vec_mixed_literal_and_variable_not_coerced() {
+        // Pins that the Vec coercion guard uses `.all(is_numeric_literal)`, not
+        // `.any`: a single variable element among numeric literals blocks the
+        // whole `[...]` from coercing (a mixed list doesn't launder a variable
+        // into a unit-annotated Vec). `[1.0, b, 3.0]` synthesizes `Vec<3>` and,
+        // failing the all-literals guard, surfaces the mismatch.
+        let prog = parse_src("function f(b: Scalar): Vec<3, kg>\n  return [1.0, b, 3.0]\nend");
+        let diags = check(prog).unwrap_err();
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "type mismatch: expected `Vec<3, kg>`, found `Vec<3>`"
+        );
     }
 }

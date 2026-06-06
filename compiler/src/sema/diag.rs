@@ -210,15 +210,70 @@ pub fn unknown_unit(span: Span, name: &str) -> Diagnostic {
     Diagnostic::type_error(span, format!("unknown unit `{name}`"))
 }
 
-/// Render a `Ty` for diagnostic messages. PR-3b uses base names; PR-3d's
-/// `Dimension::format_si` integrates here once units are implemented.
+/// Reported when two operands of a binary operator have incompatible
+/// dimensions (e.g., `Scalar<kg> + Scalar<m>`), or when a context-required
+/// dimensionality is violated (e.g., `Mat<3,3> * Scalar<m/s>` where a `Mat`
+/// must remain dimensionless per spec §4.4).
+///
+/// Per /design-discussion 2026-05-08 Q4-3, the message is operator-focus:
+/// it names the op symbol and shows both sides via `format_ty`, which
+/// renders a dim-carrying `Scalar` / `Vec` with its SI unit (e.g.
+/// `Scalar<kg>`). Single unified helper covers Scalar Add/Sub, Vec Add/Sub,
+/// Mat dim violations, and Int→Scalar implicit-conversion failures (Q7-A).
+pub fn dimension_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "dimension mismatch in '{op}': left side has {}, but right side has {}",
+            format_ty(lhs),
+            format_ty(rhs),
+        ),
+    )
+}
+
+/// Reported when a binary operator's operands have incompatible *shapes*
+/// (as opposed to dimensions — see [`dimension_mismatch`]): `Vec +/- Vec` of
+/// different lengths, `Mat +/- Mat` of different dimensions, a `Mat * Mat`
+/// whose inner dims disagree, or a `Mat * Vec` whose column count ≠ the Vec
+/// length. Operator-focus (like `dimension_mismatch`): names the op symbol and
+/// renders both operands via `format_ty` so the offending shapes are visible
+/// (e.g. `Vec<3>` vs `Vec<2>`, `Mat<2, 3>` vs `Mat<2, 4>`). For `Vec +/- Vec`
+/// (Q5-4) this fires *before* the dimension check, so a shape-and-dim double
+/// mismatch surfaces a single (shape) diagnostic with no cascade.
+pub fn shape_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!(
+            "shape mismatch in '{op}': left side has {}, but right side has {}",
+            format_ty(lhs),
+            format_ty(rhs),
+        ),
+    )
+}
+
+/// Render a `Ty` for diagnostic messages. Dim-carrying `Scalar` / `Vec`
+/// render their SI unit via [`Dimension::format_si`] (e.g. `Scalar<kg>`,
+/// `Vec<3, m*s^-1>`); dimensionless ones elide the unit (`Scalar`,
+/// `Vec<3>`), matching the source convention that omission = dimensionless.
 fn format_ty(ty: &Ty) -> String {
     match ty {
         Ty::Int => "Int".into(),
-        Ty::Scalar(_) => "Scalar".into(),
+        Ty::Scalar(d) => {
+            if d.is_dimensionless() {
+                "Scalar".into()
+            } else {
+                format!("Scalar<{}>", d.format_si())
+            }
+        }
         Ty::Bool => "Bool".into(),
         Ty::String => "String".into(),
-        Ty::Vec(n, _) => format!("Vec<{n}>"),
+        Ty::Vec(n, d) => {
+            if d.is_dimensionless() {
+                format!("Vec<{n}>")
+            } else {
+                format!("Vec<{n}, {}>", d.format_si())
+            }
+        }
         Ty::Mat(m, n) => format!("Mat<{m}, {n}>"),
         Ty::Array(t) => format!("Array<{}>", format_ty(t)),
         Ty::Dict(k, v) => format!("Dict<{}, {}>", format_ty(k), format_ty(v)),
@@ -236,5 +291,51 @@ fn format_ty(ty: &Ty) -> String {
         // Param escape produces something readable rather than a panic.
         Ty::Param(i) => format!("<param #{i}>"),
         Ty::Error => "<error>".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sema::ty::{Dimension, Ty};
+    use crate::source::Span;
+
+    // These pin the FULL rendered message (not loose `contains`) so the
+    // format_si unit integration introduced here can't silently regress:
+    // a change dropping units from `format_ty` (e.g. back to bare
+    // `Scalar` / `Vec<3>`) would still pass a `contains("Vec")`-style
+    // check but fails these exact-match assertions.
+
+    #[test]
+    fn dimension_mismatch_scalar_add_kg_vs_m() {
+        let lhs = Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
+        let rhs = Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0])); // m
+        let diag = dimension_mismatch(Span::new(0, 5), "+", &lhs, &rhs);
+        assert_eq!(
+            diag.message,
+            "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
+        );
+    }
+
+    #[test]
+    fn dimension_mismatch_vec_dim_inconsistent() {
+        let lhs = Ty::Vec(3, Dimension([1, 0, 0, 0, 0, 0, 0])); // m
+        let rhs = Ty::Vec(3, Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
+        let diag = dimension_mismatch(Span::new(0, 5), "-", &lhs, &rhs);
+        assert_eq!(
+            diag.message,
+            "dimension mismatch in '-': left side has Vec<3, m>, but right side has Vec<3, kg>"
+        );
+    }
+
+    #[test]
+    fn dimension_mismatch_mat_against_dim_scalar() {
+        let lhs = Ty::Mat(3, 3);
+        let rhs = Ty::Scalar(Dimension([1, 0, -1, 0, 0, 0, 0])); // m/s
+        let diag = dimension_mismatch(Span::new(0, 5), "*", &lhs, &rhs);
+        assert_eq!(
+            diag.message,
+            "dimension mismatch in '*': left side has Mat<3, 3>, but right side has Scalar<m*s^-1>"
+        );
     }
 }
