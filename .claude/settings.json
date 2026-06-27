@@ -1,27 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(cargo build:*)",
-      "Bash(cargo test:*)",
-      "Bash(cargo check:*)",
-      "Bash(cargo clippy:*)",
-      "Bash(cargo fmt:*)",
-      "Bash(cargo doc:*)",
-      "Bash(cargo run:*)",
-      "Bash(cargo tree:*)",
-      "Bash(cargo --version)",
-      "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git show:*)",
-      "Bash(git branch)",
-      "Bash(git branch --show-current)",
-      "Bash(git fetch:*)",
-      "Bash(git remote -v)",
-      "Bash(git checkout:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)"
-    ],
     "ask": [
       "Bash(cargo add:*)",
       "Bash(cargo remove:*)",
