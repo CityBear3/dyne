@@ -308,7 +308,7 @@ impl<'a> TypeChecker<'a> {
         }
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                self.synth_arith(op, &lt, &rt, l.span)
+                self.synth_arith(op, &lt, &rt, l.span, r.span)
             }
             // Pow takes the exponent expression (not just its type) so it can
             // require an integer literal; `rt` is computed/recorded above but
@@ -518,7 +518,7 @@ impl<'a> TypeChecker<'a> {
     /// mismatch still surfaces an accurate "expected T, found U" diagnostic
     /// rather than being swallowed (pinned by `vec_add_in_int_context_emits_diag`
     /// and the `*_wrong_return_dim_emits_diag` guards).
-    fn synth_arith(&mut self, op: BinOp, l: &Ty, r: &Ty, l_span: Span) -> Ty {
+    fn synth_arith(&mut self, op: BinOp, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
         // Q9 (CQ M4 from α /review): short-circuit on `Ty::Error` so a
         // failed-lowering operand can't masquerade as a dimensionless
         // `Scalar` and emit a misleading dimension_mismatch. `synth_binop`
@@ -541,9 +541,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Scalar(*d1)
                 } else {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -568,9 +569,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m1, *n1)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -583,9 +585,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m, *p)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -600,9 +603,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Vec(*m, *d)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -620,9 +624,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m, *n)
                 } else {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -648,17 +653,19 @@ impl<'a> TypeChecker<'a> {
             (BinOp::Add | BinOp::Sub, Ty::Vec(n1, d1), Ty::Vec(n2, d2)) => {
                 if n1 != n2 {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
                 } else if d1 != d2 {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
-                        l_span,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -1513,6 +1520,16 @@ mod tests {
             diags[0].message,
             "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
         );
+    }
+
+    #[test]
+    fn dimension_mismatch_carries_operand_labels() {
+        let diags =
+            diags_for("function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg>\n  return a + b\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert_eq!(diags[0].labels.len(), 2, "labels: {:?}", diags[0].labels);
+        assert!(diags[0].labels[0].1.contains("left side"));
+        assert!(diags[0].labels[1].1.contains("right side"));
     }
 
     #[test]

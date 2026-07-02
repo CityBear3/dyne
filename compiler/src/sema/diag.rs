@@ -220,15 +220,26 @@ pub fn unknown_unit(span: Span, name: &str) -> Diagnostic {
 /// renders a dim-carrying `Scalar` / `Vec` with its SI unit (e.g.
 /// `Scalar<kg>`). Single unified helper covers Scalar Add/Sub, Vec Add/Sub,
 /// Mat dim violations, and Int→Scalar implicit-conversion failures (Q7-A).
-pub fn dimension_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+///
+/// The primary span is the merged operand span; each operand additionally
+/// carries its own label (PR-3e decision #4).
+pub fn dimension_mismatch(
+    op: &str,
+    lhs_span: Span,
+    lhs: &Ty,
+    rhs_span: Span,
+    rhs: &Ty,
+) -> Diagnostic {
     Diagnostic::type_error(
-        span,
+        Span::merge(lhs_span, rhs_span),
         format!(
             "dimension mismatch in '{op}': left side has {}, but right side has {}",
             format_ty(lhs),
             format_ty(rhs),
         ),
     )
+    .with_label(lhs_span, format!("left side has {}", format_ty(lhs)))
+    .with_label(rhs_span, format!("right side has {}", format_ty(rhs)))
 }
 
 /// Reported when a binary operator's operands have incompatible *shapes*
@@ -240,15 +251,20 @@ pub fn dimension_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnosti
 /// (e.g. `Vec<3>` vs `Vec<2>`, `Mat<2, 3>` vs `Mat<2, 4>`). For `Vec +/- Vec`
 /// (Q5-4) this fires *before* the dimension check, so a shape-and-dim double
 /// mismatch surfaces a single (shape) diagnostic with no cascade.
-pub fn shape_mismatch(span: Span, op: &str, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+///
+/// The primary span is the merged operand span; each operand additionally
+/// carries its own label (PR-3e decision #4).
+pub fn shape_mismatch(op: &str, lhs_span: Span, lhs: &Ty, rhs_span: Span, rhs: &Ty) -> Diagnostic {
     Diagnostic::type_error(
-        span,
+        Span::merge(lhs_span, rhs_span),
         format!(
             "shape mismatch in '{op}': left side has {}, but right side has {}",
             format_ty(lhs),
             format_ty(rhs),
         ),
     )
+    .with_label(lhs_span, format!("left side has {}", format_ty(lhs)))
+    .with_label(rhs_span, format!("right side has {}", format_ty(rhs)))
 }
 
 /// Render a `Ty` for diagnostic messages. Dim-carrying `Scalar` / `Vec`
@@ -310,32 +326,38 @@ mod tests {
     fn dimension_mismatch_scalar_add_kg_vs_m() {
         let lhs = Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
         let rhs = Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0])); // m
-        let diag = dimension_mismatch(Span::new(0, 5), "+", &lhs, &rhs);
+        let diag = dimension_mismatch("+", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
         assert_eq!(
             diag.message,
             "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
         );
+        assert_eq!(diag.span, Span::new(0, 5));
+        assert_eq!(diag.labels.len(), 2);
     }
 
     #[test]
     fn dimension_mismatch_vec_dim_inconsistent() {
         let lhs = Ty::Vec(3, Dimension([1, 0, 0, 0, 0, 0, 0])); // m
         let rhs = Ty::Vec(3, Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
-        let diag = dimension_mismatch(Span::new(0, 5), "-", &lhs, &rhs);
+        let diag = dimension_mismatch("-", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
         assert_eq!(
             diag.message,
             "dimension mismatch in '-': left side has Vec<3, m>, but right side has Vec<3, kg>"
         );
+        assert_eq!(diag.span, Span::new(0, 5));
+        assert_eq!(diag.labels.len(), 2);
     }
 
     #[test]
     fn dimension_mismatch_mat_against_dim_scalar() {
         let lhs = Ty::Mat(3, 3);
         let rhs = Ty::Scalar(Dimension([1, 0, -1, 0, 0, 0, 0])); // m/s
-        let diag = dimension_mismatch(Span::new(0, 5), "*", &lhs, &rhs);
+        let diag = dimension_mismatch("*", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
         assert_eq!(
             diag.message,
             "dimension mismatch in '*': left side has Mat<3, 3>, but right side has Scalar<m*s^-1>"
         );
+        assert_eq!(diag.span, Span::new(0, 5));
+        assert_eq!(diag.labels.len(), 2);
     }
 }
