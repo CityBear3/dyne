@@ -125,7 +125,7 @@ impl Diagnostic {
             self.phase.name(),
             self.message,
         );
-        let mut echoed = 0;
+        let mut echoed = 0; // 0 = nothing echoed yet (line numbers are 1-based)
         for (l, c, w, marker, text) in rows {
             if l != echoed {
                 let excerpt = source.line_text(l).unwrap_or("");
@@ -213,6 +213,20 @@ mod tests {
         let src = SourceFile::new("x = x + 1.5");
         let w = Diagnostic::warning(Span::new(4, 11), "precision risk");
         assert!(w.render(&src).starts_with("warning[sema]: precision risk"));
+    }
+
+    #[test]
+    fn render_multi_digit_gutter_right_aligns() {
+        // Primary on line 10, a label back on line 9: the gutter is 2 wide,
+        // so the single-digit line echoes right-aligned (` 9 |`) and every
+        // separator/underline row uses a 2-space pad.
+        let src = SourceFile::new("a\nb\nc\nd\ne\nf\ng\nh\nlet a = 1\nlet a = 2");
+        let err = Diagnostic::type_error(Span::new(30, 31), "`a` is already defined in this scope")
+            .with_label(Span::new(20, 21), "previously defined here");
+        assert_eq!(
+            err.render(&src),
+            "error[sema]: `a` is already defined in this scope\n  --> line 10, col 5\n   |\n10 | let a = 2\n   |     ^\n 9 | let a = 1\n   |     - previously defined here"
+        );
     }
 
     #[test]
