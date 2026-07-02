@@ -62,6 +62,20 @@ impl SourceFile {
         let s = &self.text[start..end];
         Some(s.trim_end_matches('\n').trim_end_matches('\r'))
     }
+
+    /// Returns `(line, col, width)` for a span: the 1-based line/column of
+    /// `span.start` plus the number of columns an underline for this span
+    /// occupies on that line. A span crossing the line's end is clamped to
+    /// the line's last column; an empty (or clamped-away) span gets width 1
+    /// so every diagnostic shows at least one marker.
+    pub fn line_col_width(&self, span: Span) -> (usize, usize, usize) {
+        let (line, col) = self.line_col(span.start);
+        let line_len = self.line_text(line).map_or(0, str::len);
+        let line_start = span.start - (col - 1);
+        let line_end = line_start + line_len;
+        let end = span.end.clamp(span.start + 1, line_end.max(span.start + 1));
+        (line, col, end - span.start)
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +112,37 @@ mod tests {
         assert_eq!(src.line_text(2), Some("bar"));
         assert_eq!(src.line_text(3), Some("baz"));
         assert_eq!(src.line_text(4), None);
+    }
+
+    #[test]
+    fn line_col_width_within_line() {
+        let s = SourceFile::new("let x = 10");
+        assert_eq!(s.line_col_width(Span::new(8, 10)), (1, 9, 2));
+    }
+
+    #[test]
+    fn line_col_width_clamps_to_line_end() {
+        let s = SourceFile::new("ab\ncd");
+        // Span crosses the newline: clamp the underline to line 1's end.
+        assert_eq!(s.line_col_width(Span::new(0, 5)), (1, 1, 2));
+    }
+
+    #[test]
+    fn line_col_width_empty_span_gets_width_one() {
+        let s = SourceFile::new("abc");
+        assert_eq!(s.line_col_width(Span::new(1, 1)), (1, 2, 1));
+    }
+
+    #[test]
+    fn line_col_width_second_line() {
+        let s = SourceFile::new("ab\ncd");
+        assert_eq!(s.line_col_width(Span::new(3, 5)), (2, 1, 2));
+    }
+
+    #[test]
+    fn line_col_width_at_newline_char() {
+        let s = SourceFile::new("ab\ncd");
+        // Span sits on the newline itself: one caret just past line 1's text.
+        assert_eq!(s.line_col_width(Span::new(2, 3)), (1, 3, 1));
     }
 }
