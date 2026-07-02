@@ -50,7 +50,7 @@ pub fn compile(source: &str) -> Result<TypedProgram, Vec<Diagnostic>> {
     // where regressions are caught (CI runs in debug; release builds
     // ship a verified compiler).
     debug_assert!(
-        sema::check(builtins_ctx.program.clone()).is_ok(),
+        sema::check(builtins_ctx.program.clone()).is_ok_and(|t| t.warnings.is_empty()),
         "compiler bug: builtins.dy must compile cleanly without sema \
          diagnostics — this indicates a regression in \
          compiler/builtins/builtins.dy (or in a sema rule that fires \
