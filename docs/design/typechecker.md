@@ -259,7 +259,7 @@ The type checker is not on a hot path during program execution, but compilation 
 
 The Diagnostic type's two new collections (`labels`, `notes`) are not yet rendered by the existing `Diagnostic::render` method. PR-0 adds them as data fields without changing rendering; PR-3e implements multi-span rendering. Until then, only the primary span and message are displayed, matching the current behaviour.
 
-PR-3e's rendering is rustc-style: a line-number gutter, span-width underlines for the primary span (`^^^`) and each label (`---`), a level-aware prefix (`error` / `warning`), and `notes` printed as trailing lines. The exact layout is settled in 3e's plan; the contract is that every span a diagnostic carries is visible in its rendered output. (Same-source spans only: a label span originating in a different source — e.g. a `builtins.dy` coordinate on a built-in redefinition — is unrenderable against the user source and is skipped until `Span` carries a source id; deferred.)
+PR-3e's rendering is rustc-style: a line-number gutter, span-width underlines for the primary span (`^^^`) and each label (`---`), a level-aware prefix (`error` / `warning`), and `notes` printed as trailing lines. The exact layout is settled in 3e's plan; the contract is that every span a diagnostic carries is visible in its rendered output. (Label rows only render for spans starting within the rendered source text; a label starting at or beyond its end — a cross-source coordinate such as a `builtins.dy` span on a built-in redefinition, or an EOF-anchored span — is skipped, the two being indistinguishable until `Span` carries a source id; deferred. The primary span always renders.)
 
 ## Alternatives
 

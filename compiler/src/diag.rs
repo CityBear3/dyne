@@ -98,11 +98,13 @@ impl Diagnostic {
     /// the source excerpt and a `^` underline for the primary span, one
     /// `-` underline row per label (label text appended; the label's line
     /// is re-echoed only when it differs from the previously echoed line),
-    /// and trailing `= note:` lines. Every same-source span is visible; a
-    /// label span that falls beyond the rendered source (a cross-source
-    /// span, e.g. a builtins.dy coordinate) is skipped — see the guard in
-    /// the label loop. Spans crossing a line boundary are clamped to their
-    /// first line by `SourceFile::line_col_width`.
+    /// and trailing `= note:` lines. A label row is rendered only when its
+    /// span starts within the source text; a label starting at or beyond
+    /// the source's end — a cross-source coordinate (e.g. builtins.dy) or
+    /// an EOF-anchored span — is skipped, since the two cannot be
+    /// distinguished until `Span` carries a source id (deferred). The
+    /// primary span is always rendered. Spans crossing a line boundary are
+    /// clamped to their first line by `SourceFile::line_col_width`.
     pub fn render(&self, source: &SourceFile) -> String {
         let (line, col, width) = source.line_col_width(self.span);
 
@@ -282,6 +284,27 @@ mod tests {
         let err =
             Diagnostic::type_error(Span::new(4, 5), "msg").with_label(Span::new(8, 9), "last char"); // start == len-1 → rendered
         assert!(err.render(&src).contains("last char"));
+    }
+
+    #[test]
+    fn render_keeps_label_straddling_source_end() {
+        // start < len <= end: rendered, width clamped by line_col_width.
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err = Diagnostic::type_error(Span::new(4, 5), "msg")
+            .with_label(Span::new(7, 20), "straddles");
+        assert!(err.render(&src).contains("straddles"));
+    }
+
+    #[test]
+    fn render_keeps_in_range_label_after_skipped_one() {
+        // An out-of-range label must not abort the loop for later labels.
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err = Diagnostic::type_error(Span::new(4, 5), "msg")
+            .with_label(Span::new(500, 506), "skipped")
+            .with_label(Span::new(0, 3), "kept");
+        let r = err.render(&src);
+        assert!(!r.contains("skipped"));
+        assert!(r.contains("kept"), "rendered: {r}");
     }
 
     #[test]
