@@ -98,9 +98,11 @@ impl Diagnostic {
     /// the source excerpt and a `^` underline for the primary span, one
     /// `-` underline row per label (label text appended; the label's line
     /// is re-echoed only when it differs from the previously echoed line),
-    /// and trailing `= note:` lines. Every span the diagnostic carries is
-    /// visible. Spans crossing a line boundary are clamped to their first
-    /// line by `SourceFile::line_col_width`.
+    /// and trailing `= note:` lines. Every same-source span is visible; a
+    /// label span that falls beyond the rendered source (a cross-source
+    /// span, e.g. a builtins.dy coordinate) is skipped — see the guard in
+    /// the label loop. Spans crossing a line boundary are clamped to their
+    /// first line by `SourceFile::line_col_width`.
     pub fn render(&self, source: &SourceFile) -> String {
         let (line, col, width) = source.line_col_width(self.span);
 
@@ -264,6 +266,22 @@ mod tests {
             d.render(&src),
             "warning[sema]: precision risk\n  --> line 1, col 9\n  |\n1 | total = total + 1.5\n  |         ^^^^^^^^^^^\n  | ----- accumulator defined here\n  = note: consider kahan_sum"
         );
+    }
+
+    #[test]
+    fn render_skips_label_starting_exactly_at_source_end() {
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err =
+            Diagnostic::type_error(Span::new(4, 5), "msg").with_label(Span::new(9, 15), "at eof"); // start == len → skipped
+        assert!(!err.render(&src).contains("at eof"));
+    }
+
+    #[test]
+    fn render_keeps_label_on_last_char_of_source() {
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err =
+            Diagnostic::type_error(Span::new(4, 5), "msg").with_label(Span::new(8, 9), "last char"); // start == len-1 → rendered
+        assert!(err.render(&src).contains("last char"));
     }
 
     #[test]

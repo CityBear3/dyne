@@ -317,6 +317,7 @@ mod tests {
     fn warning_shape_label_and_note() {
         let src = "function s(): Scalar\n  let total: Scalar = 0.0\n  for i = 0, 3 do\n    total = total + 1.5\n  end\n  return total\nend";
         let w = warnings_for(src);
+        assert_eq!(w.len(), 1, "warnings: {w:?}");
         assert_eq!(w[0].labels.len(), 1);
         assert_eq!(w[0].labels[0].1, "accumulator defined here");
         assert!(w[0].notes[0].contains("kahan_sum"));
