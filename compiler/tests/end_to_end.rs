@@ -82,6 +82,22 @@ end
 }
 
 #[test]
+fn builtin_redefinition_label_not_rendered_against_user_source() {
+    use dyne::source::SourceFile;
+    let src = "enum Option<T>\n  Some(T)\n  None\nend\n";
+    let diags = compile(src).unwrap_err();
+    let source = SourceFile::new(src);
+    for d in &diags {
+        let rendered = d.render(&source);
+        // No row may point past the user source's last line (garbage guard).
+        assert!(
+            !rendered.contains("previously defined here"),
+            "rendered: {rendered}"
+        );
+    }
+}
+
+#[test]
 fn unit_annotated_let_coerces_dimensionless_literal() {
     // PR-3d-β Task 10 (spec §4.7): a unit-annotated let-binding is an
     // expected-type context, so the dimensionless `1.5` literal is promoted

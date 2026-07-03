@@ -108,6 +108,16 @@ impl Diagnostic {
         let mut rows: Vec<(usize, usize, usize, char, Option<&str>)> =
             vec![(line, col, width, '^', None)];
         for (span, text) in &self.labels {
+            // A label span can originate in a different source (e.g. a
+            // builtins.dy span on `duplicate_name` when user code redefines
+            // a built-in name); rendering it against this source would point
+            // at a nonexistent location. Skip such rows — the primary span
+            // and message still identify the diagnostic. A span that is
+            // out-of-source but numerically in range cannot be detected
+            // until Span carries a source id (deferred design).
+            if span.start >= source.text().len() {
+                continue;
+            }
             let (l, c, w) = source.line_col_width(*span);
             rows.push((l, c, w, '-', Some(text)));
         }
@@ -227,6 +237,21 @@ mod tests {
             err.render(&src),
             "error[sema]: `a` is already defined in this scope\n  --> line 10, col 5\n   |\n10 | let a = 2\n   |     ^\n 9 | let a = 1\n   |     - previously defined here"
         );
+    }
+
+    #[test]
+    fn render_skips_label_beyond_source_end() {
+        let src = SourceFile::new("let a = 1");
+        let err = Diagnostic::type_error(Span::new(4, 5), "`a` is already defined in this scope")
+            .with_label(Span::new(500, 506), "previously defined here");
+        let rendered = err.render(&src);
+        // The out-of-range label row is skipped entirely; primary still renders.
+        assert!(
+            !rendered.contains("previously defined here"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("let a = 1"));
+        assert!(rendered.contains('^'));
     }
 
     #[test]
