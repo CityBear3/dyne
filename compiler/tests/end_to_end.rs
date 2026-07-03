@@ -67,6 +67,21 @@ end
 }
 
 #[test]
+fn scalar_loop_accumulation_compiles_with_warning() {
+    let src = "\
+function total_energy(): Scalar
+    let acc: Scalar = 0.0
+    for i = 0, 10 do
+        acc = acc + 0.1
+    end
+    return acc
+end
+";
+    let typed = compile(src).unwrap();
+    assert_eq!(typed.warnings.len(), 1, "warnings: {:?}", typed.warnings);
+}
+
+#[test]
 fn unit_annotated_let_coerces_dimensionless_literal() {
     // PR-3d-β Task 10 (spec §4.7): a unit-annotated let-binding is an
     // expected-type context, so the dimensionless `1.5` literal is promoted

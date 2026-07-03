@@ -6,6 +6,7 @@
 pub mod check;
 pub mod diag;
 pub mod exhaust;
+pub mod precision;
 pub mod resolve;
 pub mod ty;
 pub mod unify;
@@ -104,6 +105,16 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
         &variant_payloads,
     );
     diags.extend(type_diags);
+
+    // Spec §6.1 precision-warning analysis (PR-3e): post-check walker,
+    // emits Level::Warning only — never trips the error gate below.
+    diags.extend(precision::analyze(
+        &program,
+        &types,
+        &resolutions,
+        &definitions,
+        &def_types,
+    ));
 
     let warnings = error_gate(diags)?;
     Ok(TypedProgram {

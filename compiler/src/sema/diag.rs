@@ -292,6 +292,24 @@ pub fn shape_mismatch(
     .with_label(rhs_span, format!("right side has {r}"))
 }
 
+/// Spec §6.1: floating-point accumulation (`acc = acc + x`) inside a
+/// loop body. `Level::Warning` — the compile still succeeds and the
+/// warning rides `TypedProgram.warnings`. The label points at the
+/// accumulator's binding site per the DD's Precision Warning Detection
+/// contract; the note suggests `kahan_sum` even though the function
+/// itself ships in PR-3f (decision #6: no suppression, note-only).
+pub fn precision_accumulation(add_span: Span, binding_span: Option<Span>) -> Diagnostic {
+    let mut d = Diagnostic::warning(
+        add_span,
+        "floating-point accumulation in a loop may accumulate rounding error",
+    )
+    .with_note("consider a compensated summation such as `kahan_sum` (spec §7)");
+    if let Some(b) = binding_span {
+        d = d.with_label(b, "accumulator defined here");
+    }
+    d
+}
+
 /// Render a `Ty` for diagnostic messages. Dim-carrying `Scalar` / `Vec`
 /// render their SI unit via [`Dimension::format_si`] (e.g. `Scalar<kg>`,
 /// `Vec<3, m*s^-1>`); dimensionless ones elide the unit (`Scalar`,
