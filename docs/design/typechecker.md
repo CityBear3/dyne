@@ -222,7 +222,7 @@ The registration mechanism described above predates 3c, which shipped the built-
 
 The compiler emits a warning when a floating-point summation pattern in a loop body risks rounding-error accumulation. The exact detection rules are settled in 3e's plan. The contract is:
 
-- The analysis runs after type checking, on the `TypedProgram`.
+- The analysis runs after type checking, over the checked program's annotation tables — the same data `TypedProgram` carries; it executes inside `sema::check` before the `TypedProgram` is assembled, because its warnings ride on that value.
 - It detects expressions of the form `accumulator = accumulator + x` (or `+=` if the language adds it later) inside `for` or `while` bodies, where `accumulator` and `x` are both `Scalar` (with any unit).
 - A warning is emitted suggesting `kahan_sum` or another compensated-summation strategy. The warning's primary span is the addition expression; a label points to the accumulator's binding site.
 
