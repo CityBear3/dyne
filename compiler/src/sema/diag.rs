@@ -1,7 +1,7 @@
 //! Diagnostic constructors for the sema phase.
 
 use crate::diag::Diagnostic;
-use crate::sema::resolve::DefKind;
+use crate::sema::resolve::{DefKind, DefinitionTable};
 use crate::sema::ty::Ty;
 use crate::source::Span;
 
@@ -16,13 +16,18 @@ pub fn duplicate_name(span: Span, prev_span: Span, name: &str) -> Diagnostic {
 
 /// "expected `<expected>`, found `<actual>`" — used by `unify_or_diag` when
 /// the synthesized type doesn't match the checking-mode expectation.
-pub fn type_mismatch_full(span: Span, expected: &Ty, actual: &Ty) -> Diagnostic {
+pub fn type_mismatch_full(
+    defs: &DefinitionTable,
+    span: Span,
+    expected: &Ty,
+    actual: &Ty,
+) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(
             "type mismatch: expected `{}`, found `{}`",
-            format_ty(expected),
-            format_ty(actual)
+            format_ty(expected, defs),
+            format_ty(actual, defs)
         ),
     )
 }
@@ -33,17 +38,20 @@ pub fn type_mismatch(span: Span, msg: &str) -> Diagnostic {
     Diagnostic::type_error(span, msg.to_string())
 }
 
-pub fn op_type_error(span: Span, op_desc: &str, ty: &Ty) -> Diagnostic {
+pub fn op_type_error(defs: &DefinitionTable, span: Span, op_desc: &str, ty: &Ty) -> Diagnostic {
     Diagnostic::type_error(
         span,
-        format!("{op_desc} not defined for `{}`", format_ty(ty)),
+        format!("{op_desc} not defined for `{}`", format_ty(ty, defs)),
     )
 }
 
-pub fn non_bool_condition(span: Span, ty: &Ty) -> Diagnostic {
+pub fn non_bool_condition(defs: &DefinitionTable, span: Span, ty: &Ty) -> Diagnostic {
     Diagnostic::type_error(
         span,
-        format!("expected `Bool` for condition, found `{}`", format_ty(ty)),
+        format!(
+            "expected `Bool` for condition, found `{}`",
+            format_ty(ty, defs)
+        ),
     )
 }
 
@@ -65,8 +73,11 @@ pub fn wrong_type_arity(span: Span, name: &str, expected: usize, actual: usize) 
     )
 }
 
-pub fn not_callable(span: Span, ty: &Ty) -> Diagnostic {
-    Diagnostic::type_error(span, format!("type `{}` is not callable", format_ty(ty)))
+pub fn not_callable(defs: &DefinitionTable, span: Span, ty: &Ty) -> Diagnostic {
+    Diagnostic::type_error(
+        span,
+        format!("type `{}` is not callable", format_ty(ty, defs)),
+    )
 }
 
 pub fn field_unknown(span: Span, struct_name: &str, field: &str) -> Diagnostic {
@@ -125,12 +136,17 @@ pub fn mat_shape_mismatch(span: Span, expected: (usize, usize), actual_cols: usi
 /// Match-pattern fired against a scrutinee whose type is not an enum.
 /// `expected_kind` is the pattern's expected category (e.g. "enum") so the
 /// message reads naturally — the scrutinee's type comes from `actual`.
-pub fn pattern_type_mismatch(span: Span, actual: &Ty, expected_kind: &str) -> Diagnostic {
+pub fn pattern_type_mismatch(
+    defs: &DefinitionTable,
+    span: Span,
+    actual: &Ty,
+    expected_kind: &str,
+) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(
             "pattern matches {expected_kind} but scrutinee is `{}`",
-            format_ty(actual)
+            format_ty(actual, defs)
         ),
     )
 }
@@ -138,12 +154,17 @@ pub fn pattern_type_mismatch(span: Span, actual: &Ty, expected_kind: &str) -> Di
 /// Variant pattern referencing a variant that doesn't belong to the
 /// scrutinee's enum. e.g. `case Some(x)` against a `Result<_, _>`
 /// scrutinee — `Some` is from `Maybe`, not `Result`.
-pub fn wrong_variant_for_enum(span: Span, variant_name: &str, scrut_ty: &Ty) -> Diagnostic {
+pub fn wrong_variant_for_enum(
+    defs: &DefinitionTable,
+    span: Span,
+    variant_name: &str,
+    scrut_ty: &Ty,
+) -> Diagnostic {
     Diagnostic::type_error(
         span,
         format!(
             "variant `{variant_name}` does not belong to scrutinee type `{}`",
-            format_ty(scrut_ty)
+            format_ty(scrut_ty, defs)
         ),
     )
 }
@@ -224,22 +245,21 @@ pub fn unknown_unit(span: Span, name: &str) -> Diagnostic {
 /// The primary span is the merged operand span; each operand additionally
 /// carries its own label (PR-3e decision #4).
 pub fn dimension_mismatch(
+    defs: &DefinitionTable,
     op: &str,
     lhs_span: Span,
     lhs: &Ty,
     rhs_span: Span,
     rhs: &Ty,
 ) -> Diagnostic {
+    let l = format_ty(lhs, defs);
+    let r = format_ty(rhs, defs);
     Diagnostic::type_error(
         Span::merge(lhs_span, rhs_span),
-        format!(
-            "dimension mismatch in '{op}': left side has {}, but right side has {}",
-            format_ty(lhs),
-            format_ty(rhs),
-        ),
+        format!("dimension mismatch in '{op}': left side has {l}, but right side has {r}"),
     )
-    .with_label(lhs_span, format!("left side has {}", format_ty(lhs)))
-    .with_label(rhs_span, format!("right side has {}", format_ty(rhs)))
+    .with_label(lhs_span, format!("left side has {l}"))
+    .with_label(rhs_span, format!("right side has {r}"))
 }
 
 /// Reported when a binary operator's operands have incompatible *shapes*
@@ -254,24 +274,33 @@ pub fn dimension_mismatch(
 ///
 /// The primary span is the merged operand span; each operand additionally
 /// carries its own label (PR-3e decision #4).
-pub fn shape_mismatch(op: &str, lhs_span: Span, lhs: &Ty, rhs_span: Span, rhs: &Ty) -> Diagnostic {
+pub fn shape_mismatch(
+    defs: &DefinitionTable,
+    op: &str,
+    lhs_span: Span,
+    lhs: &Ty,
+    rhs_span: Span,
+    rhs: &Ty,
+) -> Diagnostic {
+    let l = format_ty(lhs, defs);
+    let r = format_ty(rhs, defs);
     Diagnostic::type_error(
         Span::merge(lhs_span, rhs_span),
-        format!(
-            "shape mismatch in '{op}': left side has {}, but right side has {}",
-            format_ty(lhs),
-            format_ty(rhs),
-        ),
+        format!("shape mismatch in '{op}': left side has {l}, but right side has {r}"),
     )
-    .with_label(lhs_span, format!("left side has {}", format_ty(lhs)))
-    .with_label(rhs_span, format!("right side has {}", format_ty(rhs)))
+    .with_label(lhs_span, format!("left side has {l}"))
+    .with_label(rhs_span, format!("right side has {r}"))
 }
 
 /// Render a `Ty` for diagnostic messages. Dim-carrying `Scalar` / `Vec`
 /// render their SI unit via [`Dimension::format_si`] (e.g. `Scalar<kg>`,
 /// `Vec<3, m*s^-1>`); dimensionless ones elide the unit (`Scalar`,
 /// `Vec<3>`), matching the source convention that omission = dimensionless.
-fn format_ty(ty: &Ty) -> String {
+/// `Ty::Struct` / `Ty::Enum` resolve their real declared name through
+/// `defs` (a generic enum additionally renders its type arguments, e.g.
+/// `Result<Int, String>`); a `DefId` absent from the table falls back to
+/// the `<struct>` / `<enum>` placeholder.
+fn format_ty(ty: &Ty, defs: &DefinitionTable) -> String {
     match ty {
         Ty::Int => "Int".into(),
         Ty::Scalar(d) => {
@@ -291,14 +320,24 @@ fn format_ty(ty: &Ty) -> String {
             }
         }
         Ty::Mat(m, n) => format!("Mat<{m}, {n}>"),
-        Ty::Array(t) => format!("Array<{}>", format_ty(t)),
-        Ty::Dict(k, v) => format!("Dict<{}, {}>", format_ty(k), format_ty(v)),
+        Ty::Array(t) => format!("Array<{}>", format_ty(t, defs)),
+        Ty::Dict(k, v) => format!("Dict<{}, {}>", format_ty(k, defs), format_ty(v, defs)),
         Ty::Function(args, ret) => {
-            let arg_strs: Vec<String> = args.iter().map(format_ty).collect();
-            format!("({}) -> {}", arg_strs.join(", "), format_ty(ret))
+            let arg_strs: Vec<String> = args.iter().map(|a| format_ty(a, defs)).collect();
+            format!("({}) -> {}", arg_strs.join(", "), format_ty(ret, defs))
         }
-        Ty::Struct(_) => "<struct>".into(),
-        Ty::Enum(_, _) => "<enum>".into(),
+        Ty::Struct(id) => defs
+            .get(id)
+            .map_or_else(|| "<struct>".into(), |d| d.name.clone()),
+        Ty::Enum(id, args) => {
+            let name = defs.get(id).map_or("<enum>", |d| d.name.as_str());
+            if args.is_empty() {
+                name.into()
+            } else {
+                let rendered: Vec<String> = args.iter().map(|a| format_ty(a, defs)).collect();
+                format!("{name}<{}>", rendered.join(", "))
+            }
+        }
         Ty::Var(_) => "?".into(),
         // Param should never reach diagnostic rendering — `synth_ident`
         // substitutes Param → fresh Var before the type can leak into a
@@ -324,9 +363,10 @@ mod tests {
 
     #[test]
     fn dimension_mismatch_scalar_add_kg_vs_m() {
+        let defs = DefinitionTable::new();
         let lhs = Ty::Scalar(Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
         let rhs = Ty::Scalar(Dimension([1, 0, 0, 0, 0, 0, 0])); // m
-        let diag = dimension_mismatch("+", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
+        let diag = dimension_mismatch(&defs, "+", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
         assert_eq!(
             diag.message,
             "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
@@ -337,9 +377,10 @@ mod tests {
 
     #[test]
     fn dimension_mismatch_vec_dim_inconsistent() {
+        let defs = DefinitionTable::new();
         let lhs = Ty::Vec(3, Dimension([1, 0, 0, 0, 0, 0, 0])); // m
         let rhs = Ty::Vec(3, Dimension([0, 1, 0, 0, 0, 0, 0])); // kg
-        let diag = dimension_mismatch("-", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
+        let diag = dimension_mismatch(&defs, "-", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
         assert_eq!(
             diag.message,
             "dimension mismatch in '-': left side has Vec<3, m>, but right side has Vec<3, kg>"
@@ -350,14 +391,35 @@ mod tests {
 
     #[test]
     fn dimension_mismatch_mat_against_dim_scalar() {
+        let defs = DefinitionTable::new();
         let lhs = Ty::Mat(3, 3);
         let rhs = Ty::Scalar(Dimension([1, 0, -1, 0, 0, 0, 0])); // m/s
-        let diag = dimension_mismatch("*", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
+        let diag = dimension_mismatch(&defs, "*", Span::new(0, 1), &lhs, Span::new(4, 5), &rhs);
         assert_eq!(
             diag.message,
             "dimension mismatch in '*': left side has Mat<3, 3>, but right side has Scalar<m*s^-1>"
         );
         assert_eq!(diag.span, Span::new(0, 5));
         assert_eq!(diag.labels.len(), 2);
+    }
+
+    #[test]
+    fn format_ty_renders_enum_name_with_args() {
+        use crate::ids::DefId;
+        use crate::sema::resolve::{DefKind, DefinitionInfo, DefinitionTable};
+
+        let mut defs = DefinitionTable::new();
+        defs.insert(
+            DefId(3),
+            DefinitionInfo {
+                kind: DefKind::Enum,
+                span: Span::new(0, 1),
+                name: "Result".into(),
+                type_params: vec!["T".into(), "E".into()],
+            },
+        );
+        let ty = Ty::Enum(DefId(3), vec![Ty::Int, Ty::String]);
+        let d = not_callable(&defs, Span::new(0, 1), &ty);
+        assert_eq!(d.message, "type `Result<Int, String>` is not callable");
     }
 }

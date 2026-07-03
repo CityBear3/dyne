@@ -224,8 +224,11 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             other => {
-                self.diagnostics
-                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                self.diagnostics.push(crate::sema::diag::not_callable(
+                    self.definitions,
+                    callee.span,
+                    &other,
+                ));
                 Ty::Error
             }
         };
@@ -340,6 +343,7 @@ impl<'a> TypeChecker<'a> {
                 Ty::Mat(m, n) => Ty::Mat(*m, *n),
                 _ => {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
+                        self.definitions,
                         x.span,
                         "unary `-`",
                         &xt,
@@ -352,6 +356,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Bool
                 } else {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
+                        self.definitions,
                         x.span,
                         "unary `not`",
                         &xt,
@@ -392,8 +397,11 @@ impl<'a> TypeChecker<'a> {
                 *ret_ty
             }
             other => {
-                self.diagnostics
-                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                self.diagnostics.push(crate::sema::diag::not_callable(
+                    self.definitions,
+                    callee.span,
+                    &other,
+                ));
                 Ty::Error
             }
         }
@@ -483,6 +491,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {
                 self.diagnostics.push(crate::sema::diag::op_type_error(
+                    self.definitions,
                     base.span,
                     "field access",
                     &base_ty,
@@ -541,6 +550,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Scalar(*d1)
                 } else {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -569,6 +579,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m1, *n1)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -585,6 +596,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m, *p)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -603,6 +615,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Vec(*m, *d)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -624,6 +637,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m, *n)
                 } else {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -653,6 +667,7 @@ impl<'a> TypeChecker<'a> {
             (BinOp::Add | BinOp::Sub, Ty::Vec(n1, d1), Ty::Vec(n2, d2)) => {
                 if n1 != n2 {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -662,6 +677,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error
                 } else if d1 != d2 {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
+                        self.definitions,
                         op_symbol(op),
                         l_span,
                         &l_eff,
@@ -780,7 +796,10 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {
                 self.diagnostics.push(crate::sema::diag::op_type_error(
-                    base_span, "`^` base", base_ty,
+                    self.definitions,
+                    base_span,
+                    "`^` base",
+                    base_ty,
                 ));
                 Ty::Error
             }
@@ -852,6 +871,7 @@ impl<'a> TypeChecker<'a> {
             (r, r_span)
         };
         self.diagnostics.push(crate::sema::diag::op_type_error(
+            self.definitions,
             span,
             "logical (`&&` / `||`)",
             offender,
@@ -870,6 +890,7 @@ impl<'a> TypeChecker<'a> {
         if let Err((actual_resolved, expected_resolved)) = self.unify_table.unify(actual, expected)
         {
             self.diagnostics.push(crate::sema::diag::type_mismatch_full(
+                self.definitions,
                 span,
                 &expected_resolved,
                 &actual_resolved,
@@ -1016,8 +1037,11 @@ impl<'a> TypeChecker<'a> {
     fn check_cond(&mut self, cond: &Expr) {
         let cond_ty = self.synth_expr(cond);
         if !matches!(cond_ty, Ty::Bool | Ty::Error) {
-            self.diagnostics
-                .push(crate::sema::diag::non_bool_condition(cond.span, &cond_ty));
+            self.diagnostics.push(crate::sema::diag::non_bool_condition(
+                self.definitions,
+                cond.span,
+                &cond_ty,
+            ));
         }
     }
 
@@ -1108,7 +1132,10 @@ impl<'a> TypeChecker<'a> {
                         // an enum — e.g. `match 1 { case Some(x) => ... }`.
                         self.diagnostics
                             .push(crate::sema::diag::pattern_type_mismatch(
-                                p.span, other, "enum",
+                                self.definitions,
+                                p.span,
+                                other,
+                                "enum",
                             ));
                         return;
                     }
@@ -1116,6 +1143,7 @@ impl<'a> TypeChecker<'a> {
                 if variant_info.parent_enum != parent {
                     self.diagnostics
                         .push(crate::sema::diag::wrong_variant_for_enum(
+                            self.definitions,
                             p.span,
                             name,
                             &resolved_expected,
@@ -1173,6 +1201,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error => Ty::Error,
                     other => {
                         self.diagnostics.push(crate::sema::diag::op_type_error(
+                            self.definitions,
                             iter.span,
                             "for-in iteration",
                             other,
@@ -1197,6 +1226,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error => (Ty::Error, Ty::Error),
                     other => {
                         self.diagnostics.push(crate::sema::diag::op_type_error(
+                            self.definitions,
                             iter.span,
                             "for-key-value iteration",
                             other,
@@ -1258,6 +1288,7 @@ impl<'a> TypeChecker<'a> {
                 let cell_ty = self.synth_expr(cell);
                 if !matches!(cell_ty, Ty::Int | Ty::Scalar(_) | Ty::Error) {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
+                        self.definitions,
                         cell.span,
                         "matrix cell",
                         &cell_ty,
@@ -1295,7 +1326,10 @@ impl<'a> TypeChecker<'a> {
             other => {
                 self.synth_expr(idx);
                 self.diagnostics.push(crate::sema::diag::op_type_error(
-                    base.span, "indexing", &other,
+                    self.definitions,
+                    base.span,
+                    "indexing",
+                    &other,
                 ));
                 Ty::Error
             }
@@ -1530,6 +1564,17 @@ mod tests {
         assert_eq!(diags[0].labels.len(), 2, "labels: {:?}", diags[0].labels);
         assert!(diags[0].labels[0].1.contains("left side"));
         assert!(diags[0].labels[1].1.contains("right side"));
+    }
+
+    #[test]
+    fn struct_name_appears_in_type_mismatch_message() {
+        let diags = diags_for("struct P\n  x: Scalar\nend\nfunction f(p: P): Int\n  return p\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(
+            diags[0].message.contains("found `P`"),
+            "message: {}",
+            diags[0].message
+        );
     }
 
     #[test]
