@@ -284,6 +284,18 @@ mod tests {
     }
 
     #[test]
+    fn accumulation_after_loop_on_same_acc_warns_once() {
+        // The in-loop `total = total + 1.5` warns; the identical post-loop
+        // statement on the SAME accumulator is a sibling of the `for`, not
+        // inside it, so it must NOT warn. Pins that the `in_loop` flag does
+        // not leak from a loop to statements that follow it.
+        let w = warnings_for(
+            "function s(): Scalar\n  let total: Scalar = 0.0\n  for i = 0, 3 do\n    total = total + 1.5\n  end\n  total = total + 1.5\n  return total\nend",
+        );
+        assert_eq!(w.len(), 1, "warnings: {w:?}");
+    }
+
+    #[test]
     fn warning_shape_label_and_note() {
         let w = warnings_for(
             "function s(): Scalar\n  let total: Scalar = 0.0\n  for i = 0, 3 do\n    total = total + 1.5\n  end\n  return total\nend",
