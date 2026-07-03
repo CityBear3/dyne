@@ -224,8 +224,11 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             other => {
-                self.diagnostics
-                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                self.diagnostics.push(crate::sema::diag::not_callable(
+                    self.definitions,
+                    callee.span,
+                    &other,
+                ));
                 Ty::Error
             }
         };
@@ -308,7 +311,7 @@ impl<'a> TypeChecker<'a> {
         }
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                self.synth_arith(op, &lt, &rt, l.span)
+                self.synth_arith(op, &lt, &rt, l.span, r.span)
             }
             // Pow takes the exponent expression (not just its type) so it can
             // require an integer literal; `rt` is computed/recorded above but
@@ -340,6 +343,7 @@ impl<'a> TypeChecker<'a> {
                 Ty::Mat(m, n) => Ty::Mat(*m, *n),
                 _ => {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
+                        self.definitions,
                         x.span,
                         "unary `-`",
                         &xt,
@@ -352,6 +356,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Bool
                 } else {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
+                        self.definitions,
                         x.span,
                         "unary `not`",
                         &xt,
@@ -392,8 +397,11 @@ impl<'a> TypeChecker<'a> {
                 *ret_ty
             }
             other => {
-                self.diagnostics
-                    .push(crate::sema::diag::not_callable(callee.span, &other));
+                self.diagnostics.push(crate::sema::diag::not_callable(
+                    self.definitions,
+                    callee.span,
+                    &other,
+                ));
                 Ty::Error
             }
         }
@@ -483,6 +491,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {
                 self.diagnostics.push(crate::sema::diag::op_type_error(
+                    self.definitions,
                     base.span,
                     "field access",
                     &base_ty,
@@ -518,7 +527,7 @@ impl<'a> TypeChecker<'a> {
     /// mismatch still surfaces an accurate "expected T, found U" diagnostic
     /// rather than being swallowed (pinned by `vec_add_in_int_context_emits_diag`
     /// and the `*_wrong_return_dim_emits_diag` guards).
-    fn synth_arith(&mut self, op: BinOp, l: &Ty, r: &Ty, l_span: Span) -> Ty {
+    fn synth_arith(&mut self, op: BinOp, l: &Ty, r: &Ty, l_span: Span, r_span: Span) -> Ty {
         // Q9 (CQ M4 from α /review): short-circuit on `Ty::Error` so a
         // failed-lowering operand can't masquerade as a dimensionless
         // `Scalar` and emit a misleading dimension_mismatch. `synth_binop`
@@ -541,9 +550,11 @@ impl<'a> TypeChecker<'a> {
                     Ty::Scalar(*d1)
                 } else {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -568,9 +579,11 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m1, *n1)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -583,9 +596,11 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m, *p)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -600,9 +615,11 @@ impl<'a> TypeChecker<'a> {
                     Ty::Vec(*m, *d)
                 } else {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -620,9 +637,11 @@ impl<'a> TypeChecker<'a> {
                     Ty::Mat(*m, *n)
                 } else {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -648,17 +667,21 @@ impl<'a> TypeChecker<'a> {
             (BinOp::Add | BinOp::Sub, Ty::Vec(n1, d1), Ty::Vec(n2, d2)) => {
                 if n1 != n2 {
                     self.diagnostics.push(crate::sema::diag::shape_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
                 } else if d1 != d2 {
                     self.diagnostics.push(crate::sema::diag::dimension_mismatch(
-                        l_span,
+                        self.definitions,
                         op_symbol(op),
+                        l_span,
                         &l_eff,
+                        r_span,
                         &r_eff,
                     ));
                     Ty::Error
@@ -773,7 +796,10 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {
                 self.diagnostics.push(crate::sema::diag::op_type_error(
-                    base_span, "`^` base", base_ty,
+                    self.definitions,
+                    base_span,
+                    "`^` base",
+                    base_ty,
                 ));
                 Ty::Error
             }
@@ -845,6 +871,7 @@ impl<'a> TypeChecker<'a> {
             (r, r_span)
         };
         self.diagnostics.push(crate::sema::diag::op_type_error(
+            self.definitions,
             span,
             "logical (`&&` / `||`)",
             offender,
@@ -863,6 +890,7 @@ impl<'a> TypeChecker<'a> {
         if let Err((actual_resolved, expected_resolved)) = self.unify_table.unify(actual, expected)
         {
             self.diagnostics.push(crate::sema::diag::type_mismatch_full(
+                self.definitions,
                 span,
                 &expected_resolved,
                 &actual_resolved,
@@ -1009,8 +1037,11 @@ impl<'a> TypeChecker<'a> {
     fn check_cond(&mut self, cond: &Expr) {
         let cond_ty = self.synth_expr(cond);
         if !matches!(cond_ty, Ty::Bool | Ty::Error) {
-            self.diagnostics
-                .push(crate::sema::diag::non_bool_condition(cond.span, &cond_ty));
+            self.diagnostics.push(crate::sema::diag::non_bool_condition(
+                self.definitions,
+                cond.span,
+                &cond_ty,
+            ));
         }
     }
 
@@ -1101,7 +1132,10 @@ impl<'a> TypeChecker<'a> {
                         // an enum — e.g. `match 1 { case Some(x) => ... }`.
                         self.diagnostics
                             .push(crate::sema::diag::pattern_type_mismatch(
-                                p.span, other, "enum",
+                                self.definitions,
+                                p.span,
+                                other,
+                                "enum",
                             ));
                         return;
                     }
@@ -1109,6 +1143,7 @@ impl<'a> TypeChecker<'a> {
                 if variant_info.parent_enum != parent {
                     self.diagnostics
                         .push(crate::sema::diag::wrong_variant_for_enum(
+                            self.definitions,
                             p.span,
                             name,
                             &resolved_expected,
@@ -1166,6 +1201,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error => Ty::Error,
                     other => {
                         self.diagnostics.push(crate::sema::diag::op_type_error(
+                            self.definitions,
                             iter.span,
                             "for-in iteration",
                             other,
@@ -1190,6 +1226,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error => (Ty::Error, Ty::Error),
                     other => {
                         self.diagnostics.push(crate::sema::diag::op_type_error(
+                            self.definitions,
                             iter.span,
                             "for-key-value iteration",
                             other,
@@ -1251,6 +1288,7 @@ impl<'a> TypeChecker<'a> {
                 let cell_ty = self.synth_expr(cell);
                 if !matches!(cell_ty, Ty::Int | Ty::Scalar(_) | Ty::Error) {
                     self.diagnostics.push(crate::sema::diag::op_type_error(
+                        self.definitions,
                         cell.span,
                         "matrix cell",
                         &cell_ty,
@@ -1288,7 +1326,10 @@ impl<'a> TypeChecker<'a> {
             other => {
                 self.synth_expr(idx);
                 self.diagnostics.push(crate::sema::diag::op_type_error(
-                    base.span, "indexing", &other,
+                    self.definitions,
+                    base.span,
+                    "indexing",
+                    &other,
                 ));
                 Ty::Error
             }
@@ -1449,6 +1490,7 @@ mod tests {
     use crate::lexer::tokenize;
     use crate::parser::parse;
     use crate::sema::check;
+    use crate::source::Span;
 
     fn compile_src(src: &str) {
         let prog = parse(tokenize(src).unwrap()).unwrap();
@@ -1512,6 +1554,71 @@ mod tests {
         assert_eq!(
             diags[0].message,
             "dimension mismatch in '+': left side has Scalar<kg>, but right side has Scalar<m>"
+        );
+    }
+
+    #[test]
+    fn dimension_mismatch_carries_operand_labels() {
+        let src = "function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg>\n  return a + b\nend";
+        let diags = diags_for(src);
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.labels.len(), 2, "labels: {:?}", d.labels);
+        let a_pos = src.rfind("a + b").expect("operands in source");
+        assert_eq!(
+            d.labels[0].0,
+            Span::new(a_pos, a_pos + 1),
+            "left label span"
+        );
+        assert_eq!(
+            d.labels[1].0,
+            Span::new(a_pos + 4, a_pos + 5),
+            "right label span"
+        );
+        assert_eq!(
+            d.span,
+            Span::merge(d.labels[0].0, d.labels[1].0),
+            "merged primary"
+        );
+        assert!(d.labels[0].1.contains("left side"));
+        assert!(d.labels[1].1.contains("right side"));
+    }
+
+    #[test]
+    fn shape_mismatch_carries_operand_labels_with_spans() {
+        let src = "function f(a: Vec<3>, b: Vec<2>): Vec<3>\n  return a + b\nend";
+        let diags = diags_for(src);
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.labels.len(), 2, "labels: {:?}", d.labels);
+        let a_pos = src.rfind("a + b").expect("operands in source");
+        assert_eq!(
+            d.labels[0].0,
+            Span::new(a_pos, a_pos + 1),
+            "left label span"
+        );
+        assert_eq!(
+            d.labels[1].0,
+            Span::new(a_pos + 4, a_pos + 5),
+            "right label span"
+        );
+        assert_eq!(
+            d.span,
+            Span::merge(d.labels[0].0, d.labels[1].0),
+            "merged primary"
+        );
+        assert!(d.labels[0].1.contains("left side"));
+        assert!(d.labels[1].1.contains("right side"));
+    }
+
+    #[test]
+    fn struct_name_appears_in_type_mismatch_message() {
+        let diags = diags_for("struct P\n  x: Scalar\nend\nfunction f(p: P): Int\n  return p\nend");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(
+            diags[0].message.contains("found `P`"),
+            "message: {}",
+            diags[0].message
         );
     }
 
@@ -1774,6 +1881,8 @@ mod tests {
 
     #[test]
     fn mat_div_scalar_dimensionless_returns_mat() {
+        // Q6: Mat / Scalar(ZERO) allowed (Mat stays dimensionless),
+        // mirroring the Mul guard above.
         compile_src("function f(m: Mat<2, 2>, s: Scalar): Mat<2, 2>\n  return m / s\nend");
     }
 

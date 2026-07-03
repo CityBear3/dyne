@@ -18,6 +18,14 @@ impl Phase {
             Phase::Sema => "sema error",
         }
     }
+
+    fn name(self) -> &'static str {
+        match self {
+            Phase::Lex => "lex",
+            Phase::Parse => "parse",
+            Phase::Sema => "sema",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +33,16 @@ pub enum Level {
     Error,
     Warning,
     Note,
+}
+
+impl Level {
+    fn name(self) -> &'static str {
+        match self {
+            Level::Error => "error",
+            Level::Warning => "warning",
+            Level::Note => "note",
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -75,22 +93,75 @@ impl Diagnostic {
         self
     }
 
-    /// Render the diagnostic with line/column and source excerpt.
+    /// Render the diagnostic in rustc style: a `{level}[{phase}]:` header,
+    /// an arrow line locating the primary span, a line-number gutter with
+    /// the source excerpt and a `^` underline for the primary span, one
+    /// `-` underline row per label (label text appended; the label's line
+    /// is re-echoed only when it differs from the previously echoed line),
+    /// and trailing `= note:` lines. A label row is rendered only when its
+    /// span starts within the source text; a label starting at or beyond
+    /// the source's end — a cross-source coordinate (e.g. builtins.dy) or
+    /// an EOF-anchored span — is skipped, since the two cannot be
+    /// distinguished until `Span` carries a source id (deferred). The
+    /// primary span is always rendered. Spans crossing a line boundary are
+    /// clamped to their first line by `SourceFile::line_col_width`.
     pub fn render(&self, source: &SourceFile) -> String {
-        let (line, col) = source.line_col(self.span.start);
-        let kind = self.phase.label();
-        let excerpt = source.line_text(line).unwrap_or("");
-        let caret_col = col.saturating_sub(1);
-        let caret = " ".repeat(caret_col) + "^";
-        format!(
-            "{kind} at line {line}, col {col}: {msg}\n{excerpt}\n{caret}",
-            kind = kind,
-            line = line,
-            col = col,
-            msg = self.message,
-            excerpt = excerpt,
-            caret = caret,
-        )
+        let (line, col, width) = source.line_col_width(self.span);
+
+        // Primary row first, then label rows in emission order.
+        let mut rows: Vec<(usize, usize, usize, char, Option<&str>)> =
+            vec![(line, col, width, '^', None)];
+        for (span, text) in &self.labels {
+            // A label span can originate in a different source (e.g. a
+            // builtins.dy span on `duplicate_name` when user code redefines
+            // a built-in name); rendering it against this source would point
+            // at a nonexistent location. Skip such rows — the primary span
+            // and message still identify the diagnostic. A span that is
+            // out-of-source but numerically in range cannot be detected
+            // until Span carries a source id (deferred design).
+            if span.start >= source.text().len() {
+                continue;
+            }
+            let (l, c, w) = source.line_col_width(*span);
+            rows.push((l, c, w, '-', Some(text)));
+        }
+
+        let gutter = rows
+            .iter()
+            .map(|r| r.0.to_string().len())
+            .max()
+            .unwrap_or(1);
+        let pad = " ".repeat(gutter);
+
+        let mut out = format!(
+            "{}[{}]: {}\n  --> line {line}, col {col}\n{pad} |\n",
+            self.level.name(),
+            self.phase.name(),
+            self.message,
+        );
+        let mut echoed = 0; // 0 = nothing echoed yet (line numbers are 1-based)
+        for (l, c, w, marker, text) in rows {
+            if l != echoed {
+                let excerpt = source.line_text(l).unwrap_or("");
+                out.push_str(&format!("{l:>gutter$} | {excerpt}\n"));
+                echoed = l;
+            }
+            out.push_str(&format!(
+                "{pad} | {}{}",
+                " ".repeat(c - 1),
+                marker.to_string().repeat(w)
+            ));
+            if let Some(t) = text {
+                out.push(' ');
+                out.push_str(t);
+            }
+            out.push('\n');
+        }
+        for note in &self.notes {
+            out.push_str(&format!("{pad} = note: {note}\n"));
+        }
+        out.pop(); // no trailing newline
+        out
     }
 }
 
@@ -108,13 +179,132 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_points_to_line_and_column() {
+    fn render_primary_span_rustc_style() {
         let src = SourceFile::new("let x = 1\nlet y = ?\nlet z = 3");
         let err = Diagnostic::lex_error(Span::new(18, 19), "unexpected character '?'");
+        assert_eq!(
+            err.render(&src),
+            "error[lex]: unexpected character '?'\n  --> line 2, col 9\n  |\n2 | let y = ?\n  |         ^"
+        );
+    }
+
+    #[test]
+    fn render_two_labels_same_line() {
+        let src = SourceFile::new("return a + b");
+        let err = Diagnostic::type_error(Span::new(7, 12), "dimension mismatch in '+'")
+            .with_label(Span::new(7, 8), "left side has Scalar<kg>")
+            .with_label(Span::new(11, 12), "right side has Scalar<m>");
+        assert_eq!(
+            err.render(&src),
+            "error[sema]: dimension mismatch in '+'\n  --> line 1, col 8\n  |\n1 | return a + b\n  |        ^^^^^\n  |        - left side has Scalar<kg>\n  |            - right side has Scalar<m>"
+        );
+    }
+
+    #[test]
+    fn render_label_on_other_line_echoes_that_line() {
+        let src = SourceFile::new("let a = 1\nlet a = 2");
+        let err = Diagnostic::type_error(Span::new(14, 15), "`a` is already defined in this scope")
+            .with_label(Span::new(4, 5), "previously defined here");
+        assert_eq!(
+            err.render(&src),
+            "error[sema]: `a` is already defined in this scope\n  --> line 2, col 5\n  |\n2 | let a = 2\n  |     ^\n1 | let a = 1\n  |     - previously defined here"
+        );
+    }
+
+    #[test]
+    fn render_notes_as_trailing_lines() {
+        let src = SourceFile::new("let x = y");
+        let err = Diagnostic::type_error(Span::new(8, 9), "type mismatch")
+            .with_note("did you mean to_int(x)?");
+        assert_eq!(
+            err.render(&src),
+            "error[sema]: type mismatch\n  --> line 1, col 9\n  |\n1 | let x = y\n  |         ^\n  = note: did you mean to_int(x)?"
+        );
+    }
+
+    #[test]
+    fn render_warning_prefix() {
+        let src = SourceFile::new("x = x + 1.5");
+        let w = Diagnostic::warning(Span::new(4, 11), "precision risk");
+        assert!(w.render(&src).starts_with("warning[sema]: precision risk"));
+    }
+
+    #[test]
+    fn render_multi_digit_gutter_right_aligns() {
+        // Primary on line 10, a label back on line 9: the gutter is 2 wide,
+        // so the single-digit line echoes right-aligned (` 9 |`) and every
+        // separator/underline row uses a 2-space pad.
+        let src = SourceFile::new("a\nb\nc\nd\ne\nf\ng\nh\nlet a = 1\nlet a = 2");
+        let err = Diagnostic::type_error(Span::new(30, 31), "`a` is already defined in this scope")
+            .with_label(Span::new(20, 21), "previously defined here");
+        assert_eq!(
+            err.render(&src),
+            "error[sema]: `a` is already defined in this scope\n  --> line 10, col 5\n   |\n10 | let a = 2\n   |     ^\n 9 | let a = 1\n   |     - previously defined here"
+        );
+    }
+
+    #[test]
+    fn render_skips_label_beyond_source_end() {
+        let src = SourceFile::new("let a = 1");
+        let err = Diagnostic::type_error(Span::new(4, 5), "`a` is already defined in this scope")
+            .with_label(Span::new(500, 506), "previously defined here");
         let rendered = err.render(&src);
-        assert!(rendered.contains("line 2, col 9"));
-        assert!(rendered.contains("let y = ?"));
-        assert!(rendered.contains("unexpected character '?'"));
+        // The out-of-range label row is skipped entirely; primary still renders.
+        assert!(
+            !rendered.contains("previously defined here"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("let a = 1"));
+        assert!(rendered.contains('^'));
+    }
+
+    #[test]
+    fn render_label_and_note_together() {
+        let src = SourceFile::new("total = total + 1.5");
+        let d = Diagnostic::warning(Span::new(8, 19), "precision risk")
+            .with_label(Span::new(0, 5), "accumulator defined here")
+            .with_note("consider kahan_sum");
+        assert_eq!(
+            d.render(&src),
+            "warning[sema]: precision risk\n  --> line 1, col 9\n  |\n1 | total = total + 1.5\n  |         ^^^^^^^^^^^\n  | ----- accumulator defined here\n  = note: consider kahan_sum"
+        );
+    }
+
+    #[test]
+    fn render_skips_label_starting_exactly_at_source_end() {
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err =
+            Diagnostic::type_error(Span::new(4, 5), "msg").with_label(Span::new(9, 15), "at eof"); // start == len → skipped
+        assert!(!err.render(&src).contains("at eof"));
+    }
+
+    #[test]
+    fn render_keeps_label_on_last_char_of_source() {
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err =
+            Diagnostic::type_error(Span::new(4, 5), "msg").with_label(Span::new(8, 9), "last char"); // start == len-1 → rendered
+        assert!(err.render(&src).contains("last char"));
+    }
+
+    #[test]
+    fn render_keeps_label_straddling_source_end() {
+        // start < len <= end: rendered, width clamped by line_col_width.
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err = Diagnostic::type_error(Span::new(4, 5), "msg")
+            .with_label(Span::new(7, 20), "straddles");
+        assert!(err.render(&src).contains("straddles"));
+    }
+
+    #[test]
+    fn render_keeps_in_range_label_after_skipped_one() {
+        // An out-of-range label must not abort the loop for later labels.
+        let src = SourceFile::new("let a = 1"); // len == 9
+        let err = Diagnostic::type_error(Span::new(4, 5), "msg")
+            .with_label(Span::new(500, 506), "skipped")
+            .with_label(Span::new(0, 3), "kept");
+        let r = err.render(&src);
+        assert!(!r.contains("skipped"));
+        assert!(r.contains("kept"), "rendered: {r}");
     }
 
     #[test]
@@ -128,8 +318,8 @@ mod tests {
         let src = SourceFile::new("ab cd");
         let err = Diagnostic::parse_error(Span::new(3, 4), "expected '('");
         let rendered = err.render(&src);
-        assert!(rendered.contains("parse error"));
-        assert!(rendered.contains("expected '('"));
+        assert!(rendered.starts_with("error[parse]: expected '('"));
+        assert!(rendered.contains("ab cd"));
     }
 
     #[test]

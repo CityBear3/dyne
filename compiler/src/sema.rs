@@ -6,6 +6,7 @@
 pub mod check;
 pub mod diag;
 pub mod exhaust;
+pub mod precision;
 pub mod resolve;
 pub mod ty;
 pub mod unify;
@@ -15,7 +16,7 @@ pub(crate) mod builtins;
 use std::collections::HashMap;
 
 use crate::ast::{Item, Program};
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Level};
 use crate::ids::{DefId, NodeId};
 use crate::sema::resolve::{BindingTable, DefKind, DefinitionTable, ResolveTable};
 use crate::sema::ty::{ParamSubst, Ty, VariantPayload, lower_type, lower_type_with_subst};
@@ -64,6 +65,11 @@ pub struct TypedProgram {
     pub struct_fields: StructFieldMap,
     /// `EnumVariant` DefId → `VariantPayload` (parent enum DefId + payload Tys).
     pub variant_payloads: VariantPayloadMap,
+    /// Sub-`Error` diagnostics produced by a SUCCESSFUL check (spec §6.1
+    /// precision warnings land here in PR-3e), in emission order.
+    /// `Level::Error` diagnostics never appear: they fail `check` at the
+    /// error gate instead.
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Run the semantic-analysis phases over a parsed program.
@@ -100,9 +106,17 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     );
     diags.extend(type_diags);
 
-    if !diags.is_empty() {
-        return Err(diags);
-    }
+    // Spec §6.1 precision-warning analysis (PR-3e): post-check walker,
+    // emits Level::Warning only — never trips the error gate below.
+    diags.extend(precision::analyze(
+        &program,
+        &types,
+        &resolutions,
+        &definitions,
+        &def_types,
+    ));
+
+    let warnings = error_gate(diags)?;
     Ok(TypedProgram {
         program,
         types,
@@ -112,7 +126,21 @@ pub fn check(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
         def_types,
         struct_fields,
         variant_payloads,
+        warnings,
     })
+}
+
+/// Error gate (DD "Error model — success/failure gate"): the compile
+/// fails iff at least one diagnostic is `Level::Error`. On failure the
+/// FULL list — errors and any accompanying warnings — is returned so the
+/// caller renders everything the run produced. Otherwise the remaining
+/// sub-Error diagnostics become the success value's warnings.
+fn error_gate(diags: Vec<Diagnostic>) -> Result<Vec<Diagnostic>, Vec<Diagnostic>> {
+    if diags.iter().any(|d| d.level == Level::Error) {
+        Err(diags)
+    } else {
+        Ok(diags)
+    }
 }
 
 /// Walks each top-level item, lowering its declared types into the per-
@@ -316,6 +344,7 @@ mod tests {
     use crate::ast::Program;
     use crate::lexer::tokenize;
     use crate::parser::parse;
+    use crate::source::Span;
 
     fn parse_src(src: &str) -> Program {
         parse(tokenize(src).unwrap()).unwrap()
@@ -1152,5 +1181,41 @@ mod tests {
             diags[0].message,
             "type mismatch: expected `Vec<3, kg>`, found `Vec<3>`"
         );
+    }
+
+    #[test]
+    fn error_gate_empty_list_passes_with_no_warnings() {
+        assert_eq!(super::error_gate(Vec::new()), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn error_gate_error_level_fails() {
+        let diags = vec![Diagnostic::type_error(Span::new(0, 1), "boom")];
+        let err = super::error_gate(diags).unwrap_err();
+        assert_eq!(err.len(), 1);
+    }
+
+    #[test]
+    fn error_gate_warning_only_passes_as_warnings() {
+        let diags = vec![Diagnostic::warning(Span::new(0, 1), "careful")];
+        let warnings = super::error_gate(diags).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].level, Level::Warning);
+    }
+
+    #[test]
+    fn error_gate_mixed_err_carries_full_list() {
+        let diags = vec![
+            Diagnostic::warning(Span::new(0, 1), "careful"),
+            Diagnostic::type_error(Span::new(2, 3), "boom"),
+        ];
+        // Err carries errors AND accompanying warnings (DD contract).
+        assert_eq!(super::error_gate(diags).unwrap_err().len(), 2);
+    }
+
+    #[test]
+    fn clean_program_has_empty_warnings() {
+        let typed = crate::compile("let x: Scalar = 1.0").unwrap();
+        assert!(typed.warnings.is_empty());
     }
 }

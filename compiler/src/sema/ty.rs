@@ -126,8 +126,9 @@ impl std::fmt::Display for Dimension {
 
 /// Reported by `Dimension::mul` / `div` / `pow` when an i8 element would
 /// overflow during the operation. Sites that compute dimensions push
-/// `dimension_overflow` diagnostics and substitute `Dimension::ZERO` to
-/// suppress cascade.
+/// `dimension_overflow` diagnostics and produce `Ty::Error` to suppress
+/// cascade (Q9 migration; `dim_op_result` maps the overflow to `None`,
+/// which callers turn into `Ty::Error`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverflowError;
 

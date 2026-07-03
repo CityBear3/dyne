@@ -26,6 +26,9 @@ fn main() -> ExitCode {
     let source = SourceFile::new(text);
     match compile(source.text()) {
         Ok(typed) => {
+            for w in &typed.warnings {
+                eprintln!("{}", w.render(&source));
+            }
             println!("parsed {} item(s)", typed.program.items.len());
             ExitCode::SUCCESS
         }

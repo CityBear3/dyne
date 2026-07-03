@@ -2,7 +2,7 @@
 
 **Author:** CityBear3
 **Date:** 2026-05-04
-**Status:** Draft (decisions confirmed during /design-discussion on 2026-05-03/04)
+**Status:** Draft (decisions confirmed during /design-discussion on 2026-05-03/04; amended 2026-07-03 — PR-3e re-scope and warnings channel, per /design-discussion on 2026-06-19)
 
 ## Context and Scope
 
@@ -28,15 +28,15 @@ The following are deliberately out of scope for Stage 3 and are deferred to late
 
 - **User-defined generic functions.** The spec does not require them, and the bidirectional checker described below does not perform Hindley-Milner-style generalization. When generic functions become necessary (for example, to type a user-implemented `kahan_sum<T>`), the migration adds a generalization phase to the existing unification machinery; the rest of the checker is unaffected.
 - **Rational unit exponents.** Common physics in dyne's intended domain (Hamiltonian mechanics, symplectic integration) uses integer exponents only. Use cases such as noise spectral density (`V/√Hz`) require rational exponents but are uncommon enough to defer. The internal `Dimension` type is encapsulated so a future migration from `i8` to a rational representation does not propagate through the public API.
-- **User-defined unit systems.** SI base units, plus a hard-coded set of derived units (`N`, `J`, `Hz`, `Pa`, `W`, `V`, etc.) and the CGS / Gaussian conversion tables required by spec §4.5, are sufficient for the initial release. The spec already defers user-defined systems to "future".
+- **User-defined unit systems.** SI base units, plus a hard-coded set of derived units (`N`, `J`, `Hz`, `Pa`, `W`, `V`, etc.) and the CGS / Gaussian conversion tables required by spec §4.5, are sufficient for the initial release. The spec already defers user-defined systems to "future". The CGS / Gaussian tables and SI prefixes were subsequently deferred beyond Stage 3 entirely (2026-06-19): folding a scale factor into a literal value requires a value channel that `TypedProgram` does not yet provide, and admitting the unit names without the folding would be unsound (`Scalar<cm>` would silently unify with `Scalar<m>`).
 - **Code generation.** Stage 4 introduces a runtime (interpreter or codegen). The type checker's output (`TypedProgram`) is the contract between Stage 3 and Stage 4, but Stage 4's internal representation is independent.
 - **Incremental compilation.** `NodeId`s are stable within a single compilation unit, but no effort is made to keep them stable across edits. Adding incremental compilation would later require a stable identifier scheme (similar to rustc's `LocalDefId`).
 
 ## Overview
 
-Stage 3 is delivered as five sequential pull requests (3a–3e), preceded by one preparatory refactor PR that renames the existing `CompileError` type to a richer `Diagnostic`. Each PR produces a working compiler that accepts a strictly larger language than its predecessor.
+Stage 3 is delivered as six sequential pull requests (3a–3f), preceded by one preparatory refactor PR that renames the existing `CompileError` type to a richer `Diagnostic`. Each PR produces a working compiler that accepts a strictly larger language than its predecessor.
 
-The 3a foundation introduces the side-table infrastructure (`NodeId` and `DefId`), name resolution, and the entry point `pub fn check(prog: Program) -> Result<TypedProgram, Vec<Diagnostic>>`. After 3a the compiler can reject programs with undefined names. 3b adds the basic type checker for primitives, operators, function calls, `let` bindings, and `Vec` / `Mat` dimension checking, with units treated as zero-dimensional (everything is dimensionless). 3c extends the checker with generic enums and exhaustive pattern matching. 3d introduces the `Dimension` representation and threads units through every type rule. 3e provides the standard library's type signatures, polishes diagnostic output, and adds the spec §6.1 precision-warning analysis.
+The 3a foundation introduces the side-table infrastructure (`NodeId` and `DefId`), name resolution, and the entry point `pub fn check(prog: Program) -> Result<TypedProgram, Vec<Diagnostic>>`. After 3a the compiler can reject programs with undefined names. 3b adds the basic type checker for primitives, operators, function calls, `let` bindings, and `Vec` / `Mat` dimension checking, with units treated as zero-dimensional (everything is dimensionless). 3c extends the checker with generic enums and exhaustive pattern matching. 3d introduces the `Dimension` representation and threads units through every type rule. 3e polishes diagnostic output — multi-span rendering and a warnings channel that lets a compile succeed with warnings — and adds the spec §6.1 precision-warning analysis. 3f provides the standard library's type signatures.
 
 The architectural choice that shapes the rest of the document is the **side-table representation**: AST nodes are extended with a `NodeId(u32)` field at parse time, and all later phases store annotations in tables keyed by `NodeId`. This keeps the parser AST as a snapshot of the source, allows multiple independent annotation passes (type table, resolution table, future precision-risk table) to coexist orthogonally, and avoids the duplication cost of mirroring the AST into a separate typed tree.
 
@@ -60,9 +60,11 @@ Stage 3 is decomposed into the following PRs, executed in order:
 
 **PR-3d: Units (dimensions).** This PR replaces every `Dimension::ZERO` placeholder from 3b with the actual dimension produced by the program. The `Dimension` type's API gains pointwise arithmetic (`mul`, `div`, `pow`) and the operator type rules from 3b are extended to thread dimensions through. `Scalar<kg>` is now an actual unit-annotated type, and dimension mismatches in addition / subtraction / vector operations produce diagnostics. A small built-in table maps unit names (`kg`, `m`, `s`, etc., plus common derived units like `N`, `J`) to canonical `Dimension` values; the `parse_unit_expr` parser output is converted to `Dimension` during type checking.
 
-**PR-3e: Standard library types, diagnostics polish, precision warnings.** This PR adds `compiler/src/sema/precision.rs` and the spec §7 standard library function type signatures (declared as built-in `DefId`s in the symbol table, similar to the built-in enums in 3c). Diagnostics gain secondary span labels and notes throughout the checker. Spec §6.1 precision warnings are emitted by analyzing floating-point addition patterns within loop bodies — see the Precision Warning Detection subsection below.
+**PR-3e: Diagnostics polish and precision warnings** *(re-scoped 2026-06-19; this slice originally also carried the standard library signatures, now PR-3f)*. This PR rewrites diagnostic rendering to a rustc-style format that displays the `labels` and `notes` fields added in PR-0, upgrades the high-value dimension/shape mismatch diagnostics to dual operand-span labels, and adds `compiler/src/sema/precision.rs` for the spec §6.1 precision warnings — see the Precision Warning Detection subsection below. Because a warning must coexist with a successful compile, this PR also amends the error-model contract: `sema::check` fails only on `Level::Error` diagnostics, and warnings ride on the success value — see the Error Model subsection.
 
-Each PR is shipped behind its own worktree (`.claude/worktrees/<branch>/`), branched from the latest `main`. The branch names are `diagnostic-rename`, `stage3a-foundation`, `stage3b-typecheck`, `stage3c-generics`, `stage3d-units`, and `stage3e-stdlib-diag`.
+**PR-3f: Standard library type signatures.** The spec §7 standard library function type signatures, moved out of 3e in the 2026-06-19 re-scope. The Standard Library Type Signatures subsection below records the constraints; the registration mechanism is an open contract decision that must be settled in a further amendment to this document before 3f begins (see that subsection).
+
+Each PR is shipped behind its own worktree (`.claude/worktrees/<branch>/`), branched from the latest `main`. The branch names are `diagnostic-rename`, `stage3a-foundation`, `stage3b-typecheck`, `stage3c-generics`, `stage3d-units`, `stage3e-diagnostics`, and `stage3f-stdlib`.
 
 ### AST integration via side-tables
 
@@ -78,6 +80,7 @@ pub struct TypedProgram {
     pub types: TypeTable,                    // NodeId -> Ty
     pub resolutions: ResolveTable,           // NodeId -> DefId
     pub definitions: DefinitionTable,        // DefId -> Ty (for function signatures, enum types, etc.)
+    pub warnings: Vec<Diagnostic>,           // sub-Error diagnostics from a successful check (PR-3e)
 }
 ```
 
@@ -186,6 +189,10 @@ Existing constructors (`CompileError::lex`, `CompileError::parse`) are preserved
 
 The richer fields exist to support type-checker error messages of the form "expected `Scalar<kg>` here, found `Scalar<m>` here" with two labelled spans, and "did you mean `to_int(x)`?" notes. Spec §6.1 precision warnings are represented at `Level::Warning`.
 
+**Success/failure gate (amended 2026-07-03, decided in /design-discussion 2026-06-19).** Through PR-3d, `sema::check` treats any non-empty diagnostics list as failure: diagnostics accumulate through resolution, the signature pass, and body checking, and a non-empty list returns `Err`. That gate is sound while every diagnostic is `Level::Error`, but it cannot host warnings — a `Level::Warning` diagnostic would fail the compile and discard the `TypedProgram` it is supposed to accompany.
+
+PR-3e therefore changes the contract: `sema::check` returns `Err` if and only if at least one accumulated diagnostic has `Level::Error`. On success, diagnostics below `Level::Error` are carried on the result as `TypedProgram.warnings: Vec<Diagnostic>`, in emission order. On failure, the `Err` value carries the full accumulated list — errors and any accompanying warnings — so the caller renders everything the run produced. The public signatures of `compile` and `sema::check` (`Result<TypedProgram, Vec<Diagnostic>>`) are unchanged; `TypedProgram` gains the `warnings` field under its existing `#[non_exhaustive]` attribute. The CLI renders warnings to stderr on the success path and still exits 0 — a compile with warnings is a successful compile.
+
 ### Symbol table
 
 Name resolution is implemented in 3a with a simple lexically scoped symbol table. Scopes form a stack: entering a function or a block pushes a scope, exiting pops it. Top-level definitions populate the root scope. Lookup walks the stack from innermost to outermost.
@@ -199,21 +206,23 @@ The exact API and scope-entry rules are settled in 3a's plan. The constraints fr
 
 ### Standard library type signatures
 
-Standard library functions described in spec §7 are declared as built-in `DefId`s during checker initialization. The exact signatures are settled in 3e's plan; the constraints are:
+Standard library functions described in spec §7 are declared as built-in `DefId`s during checker initialization. The exact signatures are settled in 3f's plan (moved from 3e in the 2026-06-19 re-scope); the constraints are:
 
-- `printf(format: String, ...) -> ()` — variadic. Variadic support requires either a special-case rule in the call-checker or a sentinel `Ty` variant; the choice is settled in 3e.
-- `panic(message: String) -> !` — diverges. The `Ty::Never` (or equivalent) is added in 3e if not earlier.
+- `printf(format: String, ...) -> ()` — variadic. Variadic support requires either a special-case rule in the call-checker or a sentinel `Ty` variant; the choice is settled in 3f.
+- `panic(message: String) -> !` — diverges. The `Ty::Never` (or equivalent) is added in 3f if not earlier.
 - `to_int(x: Scalar) -> Int` — only accepts dimensionless `Scalar`.
 - `kahan_sum(xs: Array<Scalar<U>>) -> Scalar<U>` — generic over the unit `U`. Because user-defined generic functions are a non-goal, this signature is encoded as a built-in special form rather than a regular function declaration.
 - File I/O signatures (`open`, `read`, `write`, `close`) return `Result<File, Error>` per spec §7.7.
 
 The built-in symbol-table population happens at the start of `sema::check`, before user-program resolution.
 
+The registration mechanism described above predates 3c, which shipped the built-in enums by parsing an embedded `builtins.dy` source file rather than declaring bare `DefId`s — and that file has no function-declaration-without-body form, so stdlib signatures cannot ride the same path unchanged. Resolving the mechanism (a declaration form in `builtins.dy`, direct `DefId` registration, or something else), together with the type machinery the signatures need (`Ty::Never`, variadics, generic-function instantiation) and the undefined `File`/`Error` types, is an open contract decision to settle in a further amendment to this document before 3f begins.
+
 ### Precision warning detection (spec §6.1)
 
 The compiler emits a warning when a floating-point summation pattern in a loop body risks rounding-error accumulation. The exact detection rules are settled in 3e's plan. The contract is:
 
-- The analysis runs after type checking, on the `TypedProgram`.
+- The analysis runs after type checking, over the checked program's annotation tables — the same data `TypedProgram` carries; it executes inside `sema::check` before the `TypedProgram` is assembled, because its warnings ride on that value.
 - It detects expressions of the form `accumulator = accumulator + x` (or `+=` if the language adds it later) inside `for` or `while` bodies, where `accumulator` and `x` are both `Scalar` (with any unit).
 - A warning is emitted suggesting `kahan_sum` or another compensated-summation strategy. The warning's primary span is the addition expression; a label points to the accumulator's binding site.
 
@@ -249,6 +258,8 @@ The type checker is not on a hot path during program execution, but compilation 
 ### Diagnostic UX
 
 The Diagnostic type's two new collections (`labels`, `notes`) are not yet rendered by the existing `Diagnostic::render` method. PR-0 adds them as data fields without changing rendering; PR-3e implements multi-span rendering. Until then, only the primary span and message are displayed, matching the current behaviour.
+
+PR-3e's rendering is rustc-style: a line-number gutter, span-width underlines for the primary span (`^^^`) and each label (`---`), a level-aware prefix (`error` / `warning`), and `notes` printed as trailing lines. The exact layout is settled in 3e's plan; the contract is that every span a diagnostic carries is visible in its rendered output. (Label rows only render for spans starting within the rendered source text; a label starting at or beyond its end — a cross-source coordinate such as a `builtins.dy` span on a built-in redefinition, or an EOF-anchored span — is skipped, the two being indistinguishable until `Span` carries a source id; deferred. The primary span always renders.)
 
 ## Alternatives
 

@@ -67,6 +67,52 @@ end
 }
 
 #[test]
+fn scalar_loop_accumulation_compiles_with_warning() {
+    let src = "\
+function total_energy(): Scalar
+    let acc: Scalar = 0.0
+    for i = 0, 10 do
+        acc = acc + 0.1
+    end
+    return acc
+end
+";
+    let typed = compile(src).unwrap();
+    assert_eq!(typed.warnings.len(), 1, "warnings: {:?}", typed.warnings);
+}
+
+#[test]
+fn builtin_redefinition_label_not_rendered_against_user_source() {
+    use dyne::source::SourceFile;
+    let src = "enum Option<T>\n  Some(T)\n  None\nend\n";
+    let diags = compile(src).unwrap_err();
+    let source = SourceFile::new(src);
+    let user_lines = src.lines().count();
+    for d in &diags {
+        let rendered = d.render(&source);
+        // No row may point past the user source's last line (garbage guard).
+        assert!(
+            !rendered.contains("previously defined here"),
+            "rendered: {rendered}"
+        );
+        // Structural guard, immune to label-text drift: every rendered gutter
+        // row must name a real content line. A builtin-coordinate label span
+        // lands on the source's trailing (empty) line — one past the content
+        // lines — so bound the parsed line number by the content-line count.
+        for line in rendered.lines() {
+            if let Some((prefix, _)) = line.split_once(" | ")
+                && let Ok(n) = prefix.trim().parse::<usize>()
+            {
+                assert!(
+                    n <= user_lines,
+                    "gutter row names line {n} beyond the {user_lines}-line source; rendered:\n{rendered}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn unit_annotated_let_coerces_dimensionless_literal() {
     // PR-3d-β Task 10 (spec §4.7): a unit-annotated let-binding is an
     // expected-type context, so the dimensionless `1.5` literal is promoted
