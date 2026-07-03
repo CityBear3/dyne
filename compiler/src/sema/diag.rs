@@ -209,7 +209,7 @@ pub fn requires_wildcard(span: Span, kind: &str) -> Diagnostic {
 
 /// Reported when a `Dimension` arithmetic operation overflows i8 element
 /// bounds during unit-expression evaluation. The site that detected the
-/// overflow substitutes `Dimension::ZERO` to suppress cascade.
+/// overflow produces `Ty::Error` to suppress cascade.
 pub fn dimension_overflow(span: Span) -> Diagnostic {
     Diagnostic::type_error(span, "dimension component overflow in unit expression")
 }

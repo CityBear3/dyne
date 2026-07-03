@@ -1836,6 +1836,8 @@ mod tests {
 
     #[test]
     fn mat_div_scalar_dimensionless_returns_mat() {
+        // Q6: Mat / Scalar(ZERO) allowed (Mat stays dimensionless),
+        // mirroring the Mul guard above.
         compile_src("function f(m: Mat<2, 2>, s: Scalar): Mat<2, 2>\n  return m / s\nend");
     }
 
