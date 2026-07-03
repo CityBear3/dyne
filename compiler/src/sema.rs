@@ -344,6 +344,7 @@ mod tests {
     use crate::ast::Program;
     use crate::lexer::tokenize;
     use crate::parser::parse;
+    use crate::source::Span;
 
     fn parse_src(src: &str) -> Program {
         parse(tokenize(src).unwrap()).unwrap()
@@ -1181,9 +1182,6 @@ mod tests {
             "type mismatch: expected `Vec<3, kg>`, found `Vec<3>`"
         );
     }
-
-    use crate::diag::{Diagnostic, Level};
-    use crate::source::Span;
 
     #[test]
     fn error_gate_empty_list_passes_with_no_warnings() {
