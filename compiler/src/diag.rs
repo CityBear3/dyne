@@ -255,6 +255,18 @@ mod tests {
     }
 
     #[test]
+    fn render_label_and_note_together() {
+        let src = SourceFile::new("total = total + 1.5");
+        let d = Diagnostic::warning(Span::new(8, 19), "precision risk")
+            .with_label(Span::new(0, 5), "accumulator defined here")
+            .with_note("consider kahan_sum");
+        assert_eq!(
+            d.render(&src),
+            "warning[sema]: precision risk\n  --> line 1, col 9\n  |\n1 | total = total + 1.5\n  |         ^^^^^^^^^^^\n  | ----- accumulator defined here\n  = note: consider kahan_sum"
+        );
+    }
+
+    #[test]
     fn display_short_form() {
         let err = Diagnostic::parse_error(Span::new(5, 6), "expected ')'");
         assert_eq!(format!("{err}"), "parse error at offset 5: expected ')'");

@@ -1490,6 +1490,7 @@ mod tests {
     use crate::lexer::tokenize;
     use crate::parser::parse;
     use crate::sema::check;
+    use crate::source::Span;
 
     fn compile_src(src: &str) {
         let prog = parse(tokenize(src).unwrap()).unwrap();
@@ -1558,12 +1559,56 @@ mod tests {
 
     #[test]
     fn dimension_mismatch_carries_operand_labels() {
-        let diags =
-            diags_for("function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg>\n  return a + b\nend");
+        let src = "function f(a: Scalar<kg>, b: Scalar<m>): Scalar<kg>\n  return a + b\nend";
+        let diags = diags_for(src);
         assert_eq!(diags.len(), 1, "diags: {diags:?}");
-        assert_eq!(diags[0].labels.len(), 2, "labels: {:?}", diags[0].labels);
-        assert!(diags[0].labels[0].1.contains("left side"));
-        assert!(diags[0].labels[1].1.contains("right side"));
+        let d = &diags[0];
+        assert_eq!(d.labels.len(), 2, "labels: {:?}", d.labels);
+        let a_pos = src.rfind("a + b").expect("operands in source");
+        assert_eq!(
+            d.labels[0].0,
+            Span::new(a_pos, a_pos + 1),
+            "left label span"
+        );
+        assert_eq!(
+            d.labels[1].0,
+            Span::new(a_pos + 4, a_pos + 5),
+            "right label span"
+        );
+        assert_eq!(
+            d.span,
+            Span::merge(d.labels[0].0, d.labels[1].0),
+            "merged primary"
+        );
+        assert!(d.labels[0].1.contains("left side"));
+        assert!(d.labels[1].1.contains("right side"));
+    }
+
+    #[test]
+    fn shape_mismatch_carries_operand_labels_with_spans() {
+        let src = "function f(a: Vec<3>, b: Vec<2>): Vec<3>\n  return a + b\nend";
+        let diags = diags_for(src);
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.labels.len(), 2, "labels: {:?}", d.labels);
+        let a_pos = src.rfind("a + b").expect("operands in source");
+        assert_eq!(
+            d.labels[0].0,
+            Span::new(a_pos, a_pos + 1),
+            "left label span"
+        );
+        assert_eq!(
+            d.labels[1].0,
+            Span::new(a_pos + 4, a_pos + 5),
+            "right label span"
+        );
+        assert_eq!(
+            d.span,
+            Span::merge(d.labels[0].0, d.labels[1].0),
+            "merged primary"
+        );
+        assert!(d.labels[0].1.contains("left side"));
+        assert!(d.labels[1].1.contains("right side"));
     }
 
     #[test]

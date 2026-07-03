@@ -296,12 +296,35 @@ mod tests {
     }
 
     #[test]
-    fn warning_shape_label_and_note() {
+    fn non_accumulating_scalar_add_in_loop_no_warning() {
+        // Guards the self-reference requirement: `r` does not appear in the
+        // sum, so this is not accumulation (mutation-verified gap).
         let w = warnings_for(
-            "function s(): Scalar\n  let total: Scalar = 0.0\n  for i = 0, 3 do\n    total = total + 1.5\n  end\n  return total\nend",
+            "function s(a: Scalar, b: Scalar): Scalar\n  let r: Scalar = 0.0\n  for i = 0, 3 do\n    r = a + b\n  end\n  return r\nend",
         );
+        assert!(w.is_empty(), "warnings: {w:?}");
+    }
+
+    #[test]
+    fn accumulation_in_for_in_warns() {
+        let w = warnings_for(
+            "function s(xs: Array<Scalar>): Scalar\n  let total: Scalar = 0.0\n  for x in xs do\n    total = total + x\n  end\n  return total\nend",
+        );
+        assert_eq!(w.len(), 1, "warnings: {w:?}");
+    }
+
+    #[test]
+    fn warning_shape_label_and_note() {
+        let src = "function s(): Scalar\n  let total: Scalar = 0.0\n  for i = 0, 3 do\n    total = total + 1.5\n  end\n  return total\nend";
+        let w = warnings_for(src);
         assert_eq!(w[0].labels.len(), 1);
         assert_eq!(w[0].labels[0].1, "accumulator defined here");
         assert!(w[0].notes[0].contains("kahan_sum"));
+        assert!(w[0].message.contains("floating-point accumulation"));
+        let add_pos = src.find("total + 1.5").expect("addition in source");
+        assert_eq!(
+            w[0].span.start, add_pos,
+            "primary span must be the addition expression"
+        );
     }
 }
