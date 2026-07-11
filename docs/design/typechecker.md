@@ -170,6 +170,7 @@ The new code lives in `compiler/src/sema.rs` (entry point) and the `compiler/src
   - `sema/check/patterns.rs` — match and pattern checking.
 - `sema/unify.rs` — unification table. Added in 3b.
 - `sema/exhaust.rs` — match exhaustiveness. Added in 3c.
+- `sema/builtins.rs` — built-in `Option`/`Result` prelude loader (parses the embedded `builtins.dy`). Added in 3c.
 - `sema/precision.rs` — spec §6.1 precision warning analysis. Added in 3e.
 
 The `mod.rs` convention is not used; the project follows the Rust 2024 edition `foo.rs + foo/` layout established in the existing `parser.rs + parser/` and `ast.rs + ast/` modules.
@@ -244,7 +245,7 @@ NodeId addition to the AST is a backward-incompatible change to AST construction
 
 Each slice extends the test suite. The conventions are:
 
-- **Unit tests** for `sema/ty.rs` (Dimension arithmetic, Ty equality, AST `Type → Ty` conversion) and `sema/unify.rs` (unification table behaviour).
+- **Unit tests** for `sema/ty.rs` (Ty equality, AST `Type → Ty` conversion), `sema/dimension.rs` (Dimension arithmetic, unit registry, unit-expr evaluation), and `sema/unify.rs` (unification table behaviour).
 - **Integration tests** in `compiler/tests/end_to_end.rs` (or a sibling `sema_e2e.rs`) that run `check()` on small dyne programs and assert success or specific diagnostics.
 - **Sample programs** in `samples/` exercising every Stage 3 feature, verified by the existing `compiler/tests/samples.rs` harness.
 - **Diagnostic snapshot tests** for error messages that need to be locked down (using simple substring assertions per the project's existing convention, not full-output snapshot frameworks).
