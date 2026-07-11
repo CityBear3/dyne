@@ -1161,6 +1161,14 @@ mod tests {
         assert_eq!(diags[0].message, POW_VEC_REJECT_MSG);
     }
 
+    // Success-arm regression guards (mirror `vec_add_in_int_context_emits_diag`
+    // for the mul / div / pow dimension-propagation arms). Each program's
+    // operator arm computes a concrete result type that must then mismatch the
+    // declared return type, surfacing exactly one cross-context diagnostic. If
+    // the success arm silently regressed to `Ty::Error`, that `Ty::Error`
+    // unifies with anything and NO diagnostic would fire — these tests catch
+    // that.
+
     #[test]
     fn scalar_mul_wrong_return_dim_emits_diag() {
         // `a * b` = Scalar<m*kg>; reverting the Scalar-Mul success arm to
