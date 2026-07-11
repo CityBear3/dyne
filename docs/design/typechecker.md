@@ -42,7 +42,7 @@ The architectural choice that shapes the rest of the document is the **side-tabl
 
 The type checker uses **bidirectional checking with local unification** rather than full Hindley-Milner inference. Because all bindings, parameters, and return types are annotated, full inference is unnecessary; the only places where the checker must propagate type information across multiple expressions are enum constructor calls and `match` arms. A small unification table (without let-generalization) handles both. This sits between the simplicity of pure bidirectional checking and the generality of HM, and admits a later upgrade to HM if user-defined generic functions are added.
 
-Units are represented as a **fixed-size integer dimension vector** over the seven SI base dimensions. Equivalence becomes vector equality, multiplication is pointwise addition of exponents, and CGS / Gaussian conversion is a scale factor folded into literal values at parse time. The vector representation is encapsulated behind a `Dimension` newtype with method-only access; a future migration to rational exponents changes the inside of `ty.rs` without affecting the rest of the compiler.
+Units are represented as a **fixed-size integer dimension vector** over the seven SI base dimensions. Equivalence becomes vector equality, multiplication is pointwise addition of exponents, and CGS / Gaussian conversion is a scale factor folded into literal values at parse time. The vector representation is encapsulated behind a `Dimension` newtype with method-only access; a future migration to rational exponents changes the inside of `dimension.rs` without affecting the rest of the compiler.
 
 ## Detailed Design
 
@@ -124,7 +124,7 @@ A `Dimension` is a fixed-size integer vector over the seven SI base dimensions:
 pub struct Dimension([i8; 7]);   // [length, mass, time, current, temperature, amount, luminous]
 ```
 
-The array is private. Operations are exposed as methods (`mul`, `div`, `pow`, `is_dimensionless`, `format_si`) so that future work — for example, migrating `i8` to a `Rational` type to support fractional exponents — affects only `ty.rs` and not callers.
+The array is private. Operations are exposed as methods (`mul`, `div`, `pow`, `is_dimensionless`, `format_si`) so that future work — for example, migrating `i8` to a `Rational` type to support fractional exponents — affects only `dimension.rs` and not callers.
 
 A small built-in unit registry maps unit names to `Dimension` values. SI base units are encoded directly (`m → [1, 0, 0, 0, 0, 0, 0]`, etc.). Derived units expand to their base form (`N → [1, 1, -2, 0, 0, 0, 0]` because `N = kg·m·s⁻²`). CGS and Gaussian unit names share the same dimension vectors as their SI equivalents but carry a scale factor (for example, `cm → [1, 0, 0, 0, 0, 0, 0]` with scale `10⁻²`); the scale factor is folded into literal values during type checking and does not appear at runtime.
 

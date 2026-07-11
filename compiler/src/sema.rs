@@ -1248,6 +1248,7 @@ mod tests {
             typed.binding_def_ids.values().any(|d| *d == loop_var_def),
             "binding_def_ids should record the loop-var binding intro"
         );
+        assert_eq!(typed.def_types.get(&loop_var_def), Some(&Ty::Int));
     }
 
     #[test]
@@ -1256,7 +1257,7 @@ mod tests {
             "function f(d: Dict<String, Int>): Int\n    for k, v in d do\n        let s: String = k\n        let n: Int = v\n    end\n    return 0\nend\n",
         ))
         .expect("dict-iteration program should typecheck");
-        for name in ["k", "v"] {
+        for (name, expected) in [("k", Ty::String), ("v", Ty::Int)] {
             let def = typed
                 .definitions
                 .iter()
@@ -1267,6 +1268,26 @@ mod tests {
                 typed.binding_def_ids.values().any(|d| *d == def),
                 "binding_def_ids should record loop var `{name}`"
             );
+            assert_eq!(typed.def_types.get(&def), Some(&expected));
         }
+    }
+
+    #[test]
+    fn check_records_iter_loop_var_binding() {
+        let typed = check(parse_src(
+            "function f(xs: Array<Int>): Int\n    for x in xs do\n        let y: Int = x\n    end\n    return 0\nend\n",
+        ))
+        .expect("array-iteration program should typecheck");
+        let x_def = typed
+            .definitions
+            .iter()
+            .find(|(_, info)| matches!(info.kind, DefKind::LoopVar) && info.name == "x")
+            .map(|(id, _)| *id)
+            .expect("loop var `x` should be defined");
+        assert!(
+            typed.binding_def_ids.values().any(|d| *d == x_def),
+            "binding_def_ids should record the iter loop-var binding intro"
+        );
+        assert_eq!(typed.def_types.get(&x_def), Some(&Ty::Int));
     }
 }

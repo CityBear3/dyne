@@ -17,7 +17,7 @@ use crate::diag::Diagnostic;
 ///
 /// The inner array is `pub(crate)` — accessible to crate-internal
 /// callers (`UnitRegistry::lookup`, sema tests) but NOT exposed in the
-/// external `dyne::sema::ty` API surface. Future migration to rational
+/// external `dyne::sema::dimension` API surface. Future migration to rational
 /// exponents (PR-3? — noise spectroscopy use cases) stays scoped to
 /// the crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
