@@ -160,10 +160,14 @@ The full bidirectional rule set is to be specified in PR-3b's plan and implement
 The new code lives in `compiler/src/sema.rs` (entry point) and the `compiler/src/sema/` subdirectory. The directory grows over the course of the five PRs:
 
 - `sema.rs` — entry point. Defines `TypedProgram` and `pub fn check(prog: Program) -> Result<TypedProgram, Vec<Diagnostic>>`.
-- `sema/ty.rs` — `Ty`, `Dimension`, `TypeVarId`, `NodeId`, `DefId`, and the AST `Type → Ty` conversion routine. Added in 3a.
+- `sema/ty.rs` — `Ty`, `TypeVarId`, `VariantPayload`, and the AST `Type → Ty` conversion routines. Added in 3a.
+- `sema/dimension.rs` — `Dimension`, `OverflowError`, the SI `UnitRegistry`, and `eval_unit_expr`. Split out of `ty.rs` in the 2026-07 sema refactor.
 - `sema/resolve.rs` — name resolution, `SymbolTable`, and the resolution table. Added in 3a.
 - `sema/diag.rs` — sema-specific diagnostic helpers (constructors for common error shapes). Added in 3a.
-- `sema/check.rs` — bidirectional type checker. Added in 3b.
+- `sema/check.rs` — bidirectional type checker driver (dispatch, statements/control flow, literals/indexing). Added in 3b; split in the 2026-07 sema refactor into:
+  - `sema/check/operators.rs` — operator typing and dimension-propagation rules (Q4–Q13).
+  - `sema/check/calls.rs` — call/ident/variant checking (the insertion point for PR-3f's stdlib special forms).
+  - `sema/check/patterns.rs` — match and pattern checking.
 - `sema/unify.rs` — unification table. Added in 3b.
 - `sema/exhaust.rs` — match exhaustiveness. Added in 3c.
 - `sema/precision.rs` — spec §6.1 precision warning analysis. Added in 3e.
