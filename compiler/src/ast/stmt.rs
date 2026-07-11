@@ -40,18 +40,26 @@ pub struct LetStmt {
 pub enum ForStmt {
     Range {
         var: String,
+        /// Binding-intro NodeId for `var`, minted by the parser.
+        var_id: NodeId,
         start: Expr,
         end: Expr,
         body: Block,
     },
     Iter {
         var: String,
+        /// Binding-intro NodeId for `var`, minted by the parser.
+        var_id: NodeId,
         iter: Expr,
         body: Block,
     },
     IterKV {
         key: String,
+        /// Binding-intro NodeId for `key`, minted by the parser.
+        key_id: NodeId,
         value: String,
+        /// Binding-intro NodeId for `value`, minted by the parser.
+        value_id: NodeId,
         iter: Expr,
         body: Block,
     },

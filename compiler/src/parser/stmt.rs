@@ -327,6 +327,7 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
         return Ok(Stmt {
             kind: StmtKind::For(ForStmt::Range {
                 var: first,
+                var_id: p.fresh_node_id(),
                 start: from,
                 end: to,
                 body,
@@ -357,7 +358,9 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
         return Ok(Stmt {
             kind: StmtKind::For(ForStmt::IterKV {
                 key: first,
+                key_id: p.fresh_node_id(),
                 value: second,
+                value_id: p.fresh_node_id(),
                 iter,
                 body,
             }),
@@ -376,6 +379,7 @@ fn parse_for_stmt(p: &mut Parser) -> Result<Stmt, Diagnostic> {
     Ok(Stmt {
         kind: StmtKind::For(ForStmt::Iter {
             var: first,
+            var_id: p.fresh_node_id(),
             iter,
             body,
         }),

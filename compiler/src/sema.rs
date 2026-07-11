@@ -54,8 +54,8 @@ pub struct TypedProgram {
     /// Binding-intro NodeId → DefId. Maps every binding *introduction* to
     /// the DefId allocated for it. Populated by `define_or_report` for
     /// Function, Struct, Enum, EnumVariant, Param, LocalLet, TopLevelLet,
-    /// and PatternBinding intro sites. Loop-var bindings are not yet
-    /// recorded; consult `check.rs::loop_var_def_id` for those.
+    /// PatternBinding, and LoopVar intro sites — loop vars carry parser-minted
+    /// `ForStmt` binding NodeIds, which `check.rs::loop_var_def_id` looks up.
     pub binding_def_ids: BindingTable,
     /// Per-DefId types for `Function` (`Ty::Function` variant), `Param`,
     /// `LocalLet`, `TopLevelLet`, `LoopVar`, `PatternBinding`. Populated by
@@ -1230,5 +1230,43 @@ mod tests {
     fn clean_program_has_empty_warnings() {
         let typed = crate::compile("let x: Scalar = 1.0").unwrap();
         assert!(typed.warnings.is_empty());
+    }
+
+    #[test]
+    fn check_records_range_loop_var_binding() {
+        let typed = check(parse_src(
+            "function f(): Int\n    for i = 0, 3 do\n        let x: Int = i\n    end\n    return 0\nend\n",
+        ))
+        .expect("range-loop program should typecheck");
+        let loop_var_def = typed
+            .definitions
+            .iter()
+            .find(|(_, info)| matches!(info.kind, DefKind::LoopVar) && info.name == "i")
+            .map(|(id, _)| *id)
+            .expect("loop var `i` should be defined");
+        assert!(
+            typed.binding_def_ids.values().any(|d| *d == loop_var_def),
+            "binding_def_ids should record the loop-var binding intro"
+        );
+    }
+
+    #[test]
+    fn check_records_iter_kv_loop_var_bindings() {
+        let typed = check(parse_src(
+            "function f(d: Dict<String, Int>): Int\n    for k, v in d do\n        let s: String = k\n        let n: Int = v\n    end\n    return 0\nend\n",
+        ))
+        .expect("dict-iteration program should typecheck");
+        for name in ["k", "v"] {
+            let def = typed
+                .definitions
+                .iter()
+                .find(|(_, info)| matches!(info.kind, DefKind::LoopVar) && info.name == name)
+                .map(|(id, _)| *id)
+                .unwrap_or_else(|| panic!("loop var `{name}` should be defined"));
+            assert!(
+                typed.binding_def_ids.values().any(|d| *d == def),
+                "binding_def_ids should record loop var `{name}`"
+            );
+        }
     }
 }

@@ -391,7 +391,7 @@ impl<'a> TypeChecker<'a> {
             }
             StmtKind::Return(None) => Ty::Error,
             StmtKind::For(for_stmt) => {
-                self.synth_for(for_stmt, s.span);
+                self.synth_for(for_stmt);
                 Ty::Error
             }
             StmtKind::While(w) => {
@@ -401,19 +401,9 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Recover a loop-variable's DefId by `(DefKind::LoopVar, name, span)`.
-    /// Loop vars are the lone holdout from `binding_def_ids`: `ForStmt`'s
-    /// AST has no per-binding NodeId, so the resolver passes `None` to
-    /// `define_or_report` and this linear scan stands in. TODO: when
-    /// `ForStmt` grows per-binding NodeIds, replace with a
-    /// `binding_def_ids.get(&node_id).copied()` lookup.
-    fn loop_var_def_id(&self, name: &str, span: Span) -> Option<DefId> {
-        self.definitions
-            .iter()
-            .find(|(_, info)| {
-                matches!(info.kind, DefKind::LoopVar) && info.name == name && info.span == span
-            })
-            .map(|(id, _)| *id)
+    /// Recover a loop-variable's DefId from its binding-intro NodeId.
+    fn loop_var_def_id(&self, binding_id: NodeId) -> Option<DefId> {
+        self.binding_def_ids.get(&binding_id).copied()
     }
 
     fn synth_if(&mut self, e: &Expr, if_expr: &IfExpr) -> Ty {
@@ -462,22 +452,25 @@ impl<'a> TypeChecker<'a> {
         self.synth_block(&w.body);
     }
 
-    fn synth_for(&mut self, f: &ForStmt, outer_span: Span) {
+    fn synth_for(&mut self, f: &ForStmt) {
         match f {
             ForStmt::Range {
-                var,
+                var_id,
                 start,
                 end,
                 body,
+                ..
             } => {
                 self.check_expr(start, &Ty::Int);
                 self.check_expr(end, &Ty::Int);
-                if let Some(loop_def_id) = self.loop_var_def_id(var, outer_span) {
+                if let Some(loop_def_id) = self.loop_var_def_id(*var_id) {
                     self.def_types.insert(loop_def_id, Ty::Int);
                 }
                 self.synth_block(body);
             }
-            ForStmt::Iter { var, iter, body } => {
+            ForStmt::Iter {
+                var_id, iter, body, ..
+            } => {
                 let iter_ty = self.synth_expr(iter);
                 let elem_ty = match &iter_ty {
                     Ty::Array(t) => (**t).clone(),
@@ -493,16 +486,17 @@ impl<'a> TypeChecker<'a> {
                         Ty::Error
                     }
                 };
-                if let Some(loop_def_id) = self.loop_var_def_id(var, outer_span) {
+                if let Some(loop_def_id) = self.loop_var_def_id(*var_id) {
                     self.def_types.insert(loop_def_id, elem_ty);
                 }
                 self.synth_block(body);
             }
             ForStmt::IterKV {
-                key,
-                value,
+                key_id,
+                value_id,
                 iter,
                 body,
+                ..
             } => {
                 let iter_ty = self.synth_expr(iter);
                 let (k_ty, v_ty) = match &iter_ty {
@@ -518,10 +512,10 @@ impl<'a> TypeChecker<'a> {
                         (Ty::Error, Ty::Error)
                     }
                 };
-                if let Some(k_def_id) = self.loop_var_def_id(key, outer_span) {
+                if let Some(k_def_id) = self.loop_var_def_id(*key_id) {
                     self.def_types.insert(k_def_id, k_ty);
                 }
-                if let Some(v_def_id) = self.loop_var_def_id(value, outer_span) {
+                if let Some(v_def_id) = self.loop_var_def_id(*value_id) {
                     self.def_types.insert(v_def_id, v_ty);
                 }
                 self.synth_block(body);
