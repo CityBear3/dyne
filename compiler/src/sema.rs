@@ -5,6 +5,7 @@
 
 pub mod check;
 pub mod diag;
+pub mod dimension;
 pub mod exhaust;
 pub mod precision;
 pub mod resolve;
@@ -489,8 +490,9 @@ mod tests {
 
     #[test]
     fn check_populates_top_level_let_def_type() {
+        use crate::sema::dimension::Dimension;
         use crate::sema::resolve::DefKind;
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::ty::Ty;
         let prog = parse_src("let pi: Scalar = 3.14");
         let typed = check(prog).expect("ok");
         let let_def_id = typed
@@ -806,7 +808,8 @@ mod tests {
 
     #[test]
     fn scalar_kg_annotation_carries_kg_dimension() {
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
 
         let prog = parse_src("function f(x: Scalar<kg>): Scalar<kg>\n  return x\nend");
         let typed = check(prog).expect("clean compile");
@@ -823,7 +826,8 @@ mod tests {
 
     #[test]
     fn scalar_meters_per_second_carries_compound_dimension() {
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
 
         let prog = parse_src("function f(x: Scalar<m/s>): Scalar<m/s>\n  return x\nend");
         let typed = check(prog).expect("clean compile");
@@ -841,7 +845,8 @@ mod tests {
 
     #[test]
     fn vec_with_unit_carries_dimension() {
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
 
         let prog = parse_src("function f(v: Vec<3, m/s>): Vec<3, m/s>\n  return v\nend");
         let typed = check(prog).expect("clean compile");
@@ -861,7 +866,8 @@ mod tests {
         // Parser-seam pin (TC-IMP3): top-level Mul in unit position.
         // `Scalar<kg*m>` exercises UnitExpr::Mul(Atom(kg), Atom(m))
         // through parser → lower_scalar → eval_unit_expr.
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
 
         let prog = parse_src("function f(x: Scalar<kg*m>): Scalar<kg*m>\n  return x\nend");
         let typed = check(prog).expect("clean compile");
@@ -882,7 +888,8 @@ mod tests {
         // Parser-seam pin (TC-IMP3): top-level Pow in unit position.
         // `Scalar<s^-2>` exercises UnitExpr::Pow(Atom(s), -2)
         // through parser → lower_scalar → eval_unit_expr.
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
 
         let prog = parse_src("function f(x: Scalar<s^-2>): Scalar<s^-2>\n  return x\nend");
         let typed = check(prog).expect("clean compile");
@@ -904,7 +911,8 @@ mod tests {
         // `Scalar<kg*m/s^2>` is the canonical force unit (Newton in base
         // form). Exercises UnitExpr::Div(Mul(kg, m), Pow(s, 2)) through
         // parser → lower_scalar → eval_unit_expr.
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
 
         let prog = parse_src("function f(x: Scalar<kg*m/s^2>): Scalar<kg*m/s^2>\n  return x\nend");
         let typed = check(prog).expect("clean compile");
@@ -932,7 +940,8 @@ mod tests {
 
     #[test]
     fn q10_let_promotes_float_literal_to_annotated_unit() {
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
         let prog = parse_src("let m: Scalar<kg> = 1.5");
         let typed = check(prog).expect("clean compile");
         let m = def_id_of(&typed, "m");
@@ -945,7 +954,8 @@ mod tests {
     #[test]
     fn q10_let_promotes_int_to_annotated_unit() {
         // The spec §4.7 line-303 example (`let mass: Scalar<kg> = i`), now OK.
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
         let prog = parse_src("let mass: Scalar<kg> = 3");
         let typed = check(prog).expect("clean compile");
         let m = def_id_of(&typed, "mass");
@@ -973,7 +983,8 @@ mod tests {
     fn q10_let_promotes_vec_literal() {
         // Vec extension: a dimensionless `Vec<3>` literal promotes to the
         // annotated `Vec<3, m>` (same length).
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
         let prog = parse_src("let v: Vec<3, m> = [1.0, 2.0, 3.0]");
         let typed = check(prog).expect("clean compile");
         let v = def_id_of(&typed, "v");
@@ -1120,7 +1131,8 @@ mod tests {
     fn q10_negated_literal_coerces() {
         // M1: pins the `UnaryOp(Neg, FloatLit)` arm of `is_numeric_literal` —
         // a negated numeric literal still coerces to the annotated unit.
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
         let prog = parse_src("let g: Scalar<m> = -9.8");
         let typed = check(prog).expect("clean compile");
         let g = def_id_of(&typed, "g");
@@ -1137,7 +1149,8 @@ mod tests {
         // Pins the `UnaryOp(Neg, IntLit)` arm of `is_numeric_literal` — only
         // `Neg(FloatLit)` was pinned (q10_negated_literal_coerces). A negated
         // *int* literal must also coerce to the annotated unit.
-        use crate::sema::ty::{Dimension, Ty};
+        use crate::sema::dimension::Dimension;
+        use crate::sema::ty::Ty;
         let prog = parse_src("let g: Scalar<m> = -3");
         let typed = check(prog).expect("clean compile");
         let g = def_id_of(&typed, "g");

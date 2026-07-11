@@ -25,8 +25,9 @@ use crate::ast::{
 };
 use crate::diag::Diagnostic;
 use crate::ids::{DefId, NodeId};
+use crate::sema::dimension::{Dimension, OverflowError};
 use crate::sema::resolve::{BindingTable, DefKind, DefinitionTable, ResolveTable};
-use crate::sema::ty::{Dimension, OverflowError, Ty, VariantPayload, lower_type};
+use crate::sema::ty::{Ty, VariantPayload, lower_type};
 use crate::sema::unify;
 use crate::source::Span;
 
