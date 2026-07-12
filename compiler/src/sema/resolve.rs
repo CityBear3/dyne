@@ -17,10 +17,9 @@ pub type ResolveTable = HashMap<NodeId, DefId>;
 /// Maps a binding-introducing AST node's NodeId to the DefId allocated for
 /// that binding. Orthogonal to `ResolveTable`, which maps use-site NodeIds to
 /// definition DefIds. Populated by `define_or_report` for Function, Struct,
-/// Enum, EnumVariant, Param, LocalLet, TopLevelLet, and PatternBinding intro
-/// sites. Loop-var bindings are not yet recorded — `ForStmt`'s AST has no
-/// per-binding NodeId so the legacy `(kind, name, span)` linear scan in
-/// `check.rs::loop_var_def_id` covers them until a future PR plumbs ids.
+/// Enum, EnumVariant, Param, LocalLet, TopLevelLet, PatternBinding, and LoopVar
+/// intro sites — loop vars carry parser-minted `ForStmt` binding NodeIds, so
+/// `check.rs::loop_var_def_id` recovers their DefId with an O(1) lookup here.
 pub type BindingTable = HashMap<NodeId, DefId>;
 
 /// Metadata stored per definition. Stage 3a only records the kind and
@@ -132,8 +131,10 @@ impl Resolver {
     /// resolver also records `intro_node_id → def_id` in `binding_def_ids`
     /// so downstream passes can recover the DefId in O(1) instead of
     /// scanning `DefinitionTable` for a `(kind, name, span)` match. Pass
-    /// `None` when the AST does not yet carry a per-binding NodeId — today
-    /// only `ForStmt` loop variables fall into this bucket.
+    /// `None` only for a binding whose AST node carries no intro NodeId, which
+    /// skips the `binding_def_ids` record; since the 2026-07 ForStmt-NodeId
+    /// change every binding kind — loop variables included — carries one, so
+    /// all current callers pass `Some`.
     fn define_or_report(
         &mut self,
         name: String,
@@ -331,17 +332,13 @@ fn resolve_stmt(r: &mut Resolver, s: &Stmt) {
 }
 
 fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
-    // ForStmt variants do not carry per-binding spans or NodeIds; fall back
-    // to the outer Stmt span for loop-var binding sites and pass `None` for
-    // the binding-intro key so `binding_def_ids` skips loop vars. Pinning a
-    // precise span/id is a quality improvement that can be revisited later;
-    // until then `check.rs::loop_var_def_id` keeps using the legacy
-    // `(kind, name, span)` linear scan for loop-var DefId recovery.
-    // TODO: when ForStmt grows per-binding NodeIds, plumb them through and
-    // collapse `loop_var_def_id` to a `binding_def_ids` lookup.
+    // Binding NodeIds are minted by the parser; the binding *span* still falls
+    // back to the outer Stmt span (precise per-binding spans are a separate
+    // diagnostic-quality improvement, deliberately out of scope here).
     match f {
         ForStmt::Range {
             var,
+            var_id,
             start,
             end,
             body,
@@ -349,27 +346,34 @@ fn resolve_for(r: &mut Resolver, f: &ForStmt, outer_span: Span) {
             resolve_expr(r, start);
             resolve_expr(r, end);
             r.table.enter_scope();
-            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span, None);
+            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span, Some(*var_id));
             resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }
-        ForStmt::Iter { var, iter, body } => {
-            resolve_expr(r, iter);
-            r.table.enter_scope();
-            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span, None);
-            resolve_stmts(r, &body.stmts);
-            r.table.exit_scope();
-        }
-        ForStmt::IterKV {
-            key,
-            value,
+        ForStmt::Iter {
+            var,
+            var_id,
             iter,
             body,
         } => {
             resolve_expr(r, iter);
             r.table.enter_scope();
-            r.define_or_report(key.clone(), DefKind::LoopVar, outer_span, None);
-            r.define_or_report(value.clone(), DefKind::LoopVar, outer_span, None);
+            r.define_or_report(var.clone(), DefKind::LoopVar, outer_span, Some(*var_id));
+            resolve_stmts(r, &body.stmts);
+            r.table.exit_scope();
+        }
+        ForStmt::IterKV {
+            key,
+            key_id,
+            value,
+            value_id,
+            iter,
+            body,
+        } => {
+            resolve_expr(r, iter);
+            r.table.enter_scope();
+            r.define_or_report(key.clone(), DefKind::LoopVar, outer_span, Some(*key_id));
+            r.define_or_report(value.clone(), DefKind::LoopVar, outer_span, Some(*value_id));
             resolve_stmts(r, &body.stmts);
             r.table.exit_scope();
         }

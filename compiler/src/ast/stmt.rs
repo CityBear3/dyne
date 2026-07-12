@@ -36,22 +36,36 @@ pub struct LetStmt {
     pub init: Expr,
 }
 
+/// A `for` loop. Each variant carries parser-minted binding-intro NodeIds for
+/// its loop variable(s) (`var_id`, or `key_id` / `value_id` for `IterKV`).
+/// These must be unique ids from `Parser::fresh_node_id()`: the resolver keys
+/// each loop variable's DefId by its binding NodeId, so reusing a placeholder
+/// such as `NodeId(0)` (e.g. in a hand-built AST fixture) silently corrupts
+/// `binding_def_ids`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForStmt {
     Range {
         var: String,
+        /// Binding-intro NodeId for `var`, minted by the parser.
+        var_id: NodeId,
         start: Expr,
         end: Expr,
         body: Block,
     },
     Iter {
         var: String,
+        /// Binding-intro NodeId for `var`, minted by the parser.
+        var_id: NodeId,
         iter: Expr,
         body: Block,
     },
     IterKV {
         key: String,
+        /// Binding-intro NodeId for `key`, minted by the parser.
+        key_id: NodeId,
         value: String,
+        /// Binding-intro NodeId for `value`, minted by the parser.
+        value_id: NodeId,
         iter: Expr,
         body: Block,
     },

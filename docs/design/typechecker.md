@@ -42,7 +42,7 @@ The architectural choice that shapes the rest of the document is the **side-tabl
 
 The type checker uses **bidirectional checking with local unification** rather than full Hindley-Milner inference. Because all bindings, parameters, and return types are annotated, full inference is unnecessary; the only places where the checker must propagate type information across multiple expressions are enum constructor calls and `match` arms. A small unification table (without let-generalization) handles both. This sits between the simplicity of pure bidirectional checking and the generality of HM, and admits a later upgrade to HM if user-defined generic functions are added.
 
-Units are represented as a **fixed-size integer dimension vector** over the seven SI base dimensions. Equivalence becomes vector equality, multiplication is pointwise addition of exponents, and CGS / Gaussian conversion is a scale factor folded into literal values at parse time. The vector representation is encapsulated behind a `Dimension` newtype with method-only access; a future migration to rational exponents changes the inside of `ty.rs` without affecting the rest of the compiler.
+Units are represented as a **fixed-size integer dimension vector** over the seven SI base dimensions. Equivalence becomes vector equality, multiplication is pointwise addition of exponents, and CGS / Gaussian conversion is a scale factor folded into literal values at parse time. The vector representation is encapsulated behind a `Dimension` newtype with method-only access; a future migration to rational exponents changes the inside of `dimension.rs` without affecting the rest of the compiler.
 
 ## Detailed Design
 
@@ -124,7 +124,7 @@ A `Dimension` is a fixed-size integer vector over the seven SI base dimensions:
 pub struct Dimension([i8; 7]);   // [length, mass, time, current, temperature, amount, luminous]
 ```
 
-The array is private. Operations are exposed as methods (`mul`, `div`, `pow`, `is_dimensionless`, `format_si`) so that future work — for example, migrating `i8` to a `Rational` type to support fractional exponents — affects only `ty.rs` and not callers.
+The array is private. Operations are exposed as methods (`mul`, `div`, `pow`, `is_dimensionless`, `format_si`) so that future work — for example, migrating `i8` to a `Rational` type to support fractional exponents — affects only `dimension.rs` and not callers.
 
 A small built-in unit registry maps unit names to `Dimension` values. SI base units are encoded directly (`m → [1, 0, 0, 0, 0, 0, 0]`, etc.). Derived units expand to their base form (`N → [1, 1, -2, 0, 0, 0, 0]` because `N = kg·m·s⁻²`). CGS and Gaussian unit names share the same dimension vectors as their SI equivalents but carry a scale factor (for example, `cm → [1, 0, 0, 0, 0, 0, 0]` with scale `10⁻²`); the scale factor is folded into literal values during type checking and does not appear at runtime.
 
@@ -160,12 +160,17 @@ The full bidirectional rule set is to be specified in PR-3b's plan and implement
 The new code lives in `compiler/src/sema.rs` (entry point) and the `compiler/src/sema/` subdirectory. The directory grows over the course of the five PRs:
 
 - `sema.rs` — entry point. Defines `TypedProgram` and `pub fn check(prog: Program) -> Result<TypedProgram, Vec<Diagnostic>>`.
-- `sema/ty.rs` — `Ty`, `Dimension`, `TypeVarId`, `NodeId`, `DefId`, and the AST `Type → Ty` conversion routine. Added in 3a.
+- `sema/ty.rs` — `Ty`, `TypeVarId`, `VariantPayload`, and the AST `Type → Ty` conversion routines. Added in 3a.
+- `sema/dimension.rs` — `Dimension`, `OverflowError`, the SI `UnitRegistry`, and `eval_unit_expr`. Split out of `ty.rs` in the 2026-07 sema refactor.
 - `sema/resolve.rs` — name resolution, `SymbolTable`, and the resolution table. Added in 3a.
 - `sema/diag.rs` — sema-specific diagnostic helpers (constructors for common error shapes). Added in 3a.
-- `sema/check.rs` — bidirectional type checker. Added in 3b.
+- `sema/check.rs` — bidirectional type checker driver (dispatch, statements/control flow, literals/indexing). Added in 3b; split in the 2026-07 sema refactor into:
+  - `sema/check/operators.rs` — operator typing and dimension-propagation rules (Q4–Q13).
+  - `sema/check/calls.rs` — call/ident/variant checking (the insertion point for PR-3f's stdlib special forms).
+  - `sema/check/patterns.rs` — match and pattern checking.
 - `sema/unify.rs` — unification table. Added in 3b.
 - `sema/exhaust.rs` — match exhaustiveness. Added in 3c.
+- `sema/builtins.rs` — built-in `Option`/`Result` prelude loader (parses the embedded `builtins.dy`). Added in 3c.
 - `sema/precision.rs` — spec §6.1 precision warning analysis. Added in 3e.
 
 The `mod.rs` convention is not used; the project follows the Rust 2024 edition `foo.rs + foo/` layout established in the existing `parser.rs + parser/` and `ast.rs + ast/` modules.
@@ -240,7 +245,7 @@ NodeId addition to the AST is a backward-incompatible change to AST construction
 
 Each slice extends the test suite. The conventions are:
 
-- **Unit tests** for `sema/ty.rs` (Dimension arithmetic, Ty equality, AST `Type → Ty` conversion) and `sema/unify.rs` (unification table behaviour).
+- **Unit tests** for `sema/ty.rs` (Ty equality, AST `Type → Ty` conversion), `sema/dimension.rs` (Dimension arithmetic, unit registry, unit-expr evaluation), and `sema/unify.rs` (unification table behaviour).
 - **Integration tests** in `compiler/tests/end_to_end.rs` (or a sibling `sema_e2e.rs`) that run `check()` on small dyne programs and assert success or specific diagnostics.
 - **Sample programs** in `samples/` exercising every Stage 3 feature, verified by the existing `compiler/tests/samples.rs` harness.
 - **Diagnostic snapshot tests** for error messages that need to be locked down (using simple substring assertions per the project's existing convention, not full-output snapshot frameworks).

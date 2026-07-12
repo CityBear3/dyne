@@ -370,7 +370,8 @@ fn format_ty(ty: &Ty, defs: &DefinitionTable) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sema::ty::{Dimension, Ty};
+    use crate::sema::dimension::Dimension;
+    use crate::sema::ty::Ty;
     use crate::source::Span;
 
     // These pin the FULL rendered message (not loose `contains`) so the
